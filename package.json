@@ -1,0 +1,37 @@
+{
+  "name": "aide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aide — voice-native work & pay platform for blind users (APIConf x Monnify).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "account": "tsx src/create-account.ts",
+    "inbound": "tsx src/inbound.ts",
+    "proof": "tsx src/proof.ts",
+    "webhook": "tsx src/webhook.ts",
+    "balance": "tsx src/balance.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.0",
+    "ai": "^4.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "next": "^15.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.3"
+  }
+}

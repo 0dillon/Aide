@@ -83,6 +83,7 @@ the design rules that keep the agent honest about money, and where to extend it.
 ## Documentation
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — system design, data flow, extension points
+- [`POSITIONING.md`](POSITIONING.md) — competitive landscape + how Aide wins
 - [`PROOF.md`](PROOF.md) — mock-free Monnify sandbox verification log
 - [`PRD.md`](PRD.md) — product requirements
 

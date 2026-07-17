@@ -8,7 +8,7 @@ before extending the app.
 **The language model never decides a financial fact.** It only narrates what a Monnify
 tool returned *this turn*. Balances, payment statuses, account names, and transfer results
 all come from real API calls. This is enforced in two places — the system prompt
-(`lib/agent/system.ts`) tells Claude never to invent a number, and the tools
+(`lib/agent/system.ts`) tells the model never to invent a number, and the tools
 (`lib/agent/tools.ts`) are the only path to a money value. Keep both in sync when you add
 capabilities.
 
@@ -23,7 +23,7 @@ Browser (app/page.tsx)
 POST /api/agent   (app/api/agent/route.ts)
   │  full message history + system prompt
   ▼
-Claude (Vercel AI SDK, generateText, maxSteps: 6)
+DeepSeek (Vercel AI SDK, generateText, maxSteps: 6)
   │  chooses tools
   ▼
 Aide tools (lib/agent/tools.ts)
@@ -44,7 +44,7 @@ time, and the route returns both the spoken `reply` and a `state` snapshot for t
 |---|---|---|
 | Voice I/O | `app/useVoice.ts` | Browser STT/TTS wrapper. Loosely typed — Web Speech isn't in `lib.dom`. |
 | UI | `app/page.tsx` | Mic button, spoken-reply display, type fallback, live observer panel. |
-| Agent endpoint | `app/api/agent/route.ts` | Runs Claude with the system prompt + tools; returns reply + state. |
+| Agent endpoint | `app/api/agent/route.ts` | Runs the model with the system prompt + tools; returns reply + state. |
 | Agent brain | `lib/agent/system.ts`, `lib/agent/tools.ts` | Persona/rules + the tool surface. |
 | Domain state | `lib/store.ts` | One demo worker, real reserved account, real balance from confirmed pay. |
 | Payments client | `lib/monnify.ts` | Auth (cached bearer), reserved accounts, verify, name enquiry, transfer, webhook HMAC. |

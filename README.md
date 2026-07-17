@@ -27,8 +27,8 @@ Everything below is backed by **real Monnify sandbox calls**, not mocks (see
 ## The voice loop
 
 1. Worker taps once and speaks (Web Speech API — STT in, TTS out).
-2. The transcript goes to `/api/agent`, which runs Claude with a tool set.
-3. Claude never invents a number — every money fact comes from a Monnify tool result.
+2. The transcript goes to `/api/agent`, which runs the model (DeepSeek) with a tool set.
+3. The model never invents a number — every money fact comes from a Monnify tool result.
 4. The reply is spoken back, and a live side-panel mirrors state for sighted judges.
 
 ---
@@ -89,4 +89,4 @@ the design rules that keep the agent honest about money, and where to extend it.
 ## Tech
 
 Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · Vercel AI SDK +
-Anthropic (Claude) · Monnify API · Web Speech API.
+DeepSeek · Monnify API · Web Speech API.

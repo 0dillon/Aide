@@ -20,9 +20,18 @@ Everything below is backed by **real Monnify sandbox calls**, not mocks (see
 - **Employer pays in** — inbound payment lands, Aide re-fetches it server-side and only
   then announces the confirmed amount.
 - **Balance** — the real sum of confirmed (`PAID`) inbound transactions, spoken aloud.
-- **Withdrawal** — a real disbursement call. In sandbox it returns
-  `PENDING_AUTHORIZATION` because third-party disbursement is gated behind full business
-  KYC (see PROOF.md). Aide narrates this honestly rather than faking success.
+- **Withdrawal with voice-native 2FA** — a real disbursement call, gated behind a
+  two-step spoken confirmation: Aide reads back the amount and account name, then the user
+  must say a confirm word aloud before any money moves. This replaces the visual OTP that
+  locks blind users out. In sandbox the transfer returns `PENDING_AUTHORIZATION` because
+  third-party disbursement is gated behind full business KYC (see PROOF.md) — Aide narrates
+  this honestly rather than faking success.
+
+## Demo flow (two screens)
+
+- **`/`** — the worker's voice screen. Tap, speak, get paid.
+- **`/employer`** — an employer pays the worker. It surfaces the worker's **real** reserved
+  NUBAN and hands off to the Monnify simulator, so inbound money is real, not mocked.
 
 ## The voice loop
 
@@ -69,6 +78,7 @@ npm run balance    # wallet balance check
 | Path | What it holds |
 |---|---|
 | `app/` | Next.js App Router UI — voice page, agent API route |
+| `app/employer/` | Employer "payout desk" — shows the worker's real NUBAN to pay into |
 | `app/useVoice.ts` | Web Speech API wrapper (STT + TTS) |
 | `lib/monnify.ts` | Monnify client — auth, reserved accounts, verify, transfer, webhook HMAC |
 | `lib/agent/` | Aide's system prompt and tool definitions |

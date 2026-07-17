@@ -24,8 +24,30 @@ type Worker = {
   payoutAccount?: string;
   payoutBankCode?: string;
   payoutAccountName?: string;
+  pendingWithdrawal?: PendingWithdrawal;
   applications: Application[];
 };
+
+// A withdrawal armed but not yet executed. The user must speak `phrase` back
+// before the transfer runs — voice consent replacing a visual OTP.
+export type PendingWithdrawal = { amount: number; phrase: string; createdAt: number };
+
+const CONFIRM_WORDS = ["mango", "sunrise", "guitar", "river", "orange", "candle", "harvest", "compass"];
+const PENDING_TTL_MS = 5 * 60 * 1000;
+
+function makeConfirmPhrase(): string {
+  return CONFIRM_WORDS[Math.floor(Math.random() * CONFIRM_WORDS.length)];
+}
+
+// Loose match: the user may say "mango" or "the word is mango". ASR is imperfect,
+// so we check the confirm word appears among the spoken tokens.
+function phraseMatches(spoken: string, phrase: string): boolean {
+  return spoken
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .includes(phrase);
+}
 
 const worker: Worker = { id: "demo-worker", name: "Aide Demo Worker", email: "demo-worker@aide.test", applications: [] };
 
@@ -82,6 +104,46 @@ export function setPayout(account: string, bankCode: string, accountName: string
   worker.payoutAccountName = accountName;
 }
 
+// Step 1 of withdrawal: arm it. Returns the details Aide must read back plus the
+// confirm word the user must speak. No money moves here.
+export function armWithdrawal(amount: number):
+  | { ok: true; amount: number; accountName: string; account: string; phrase: string }
+  | { ok: false; message: string } {
+  if (!worker.payoutAccount || !worker.payoutBankCode || !worker.payoutAccountName) {
+    return { ok: false, message: "No payout account saved yet. Register one first." };
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, message: "Amount must be a positive number." };
+  }
+  const phrase = makeConfirmPhrase();
+  worker.pendingWithdrawal = { amount, phrase, createdAt: Date.now() };
+  return { ok: true, amount, accountName: worker.payoutAccountName, account: worker.payoutAccount, phrase };
+}
+
+// Step 2 of withdrawal: verify the spoken confirmation against the armed phrase.
+// Only a match (within TTL) authorizes the transfer. This is the accessible 2FA gate.
+export function verifyWithdrawal(spokenPhrase: string):
+  | { ok: true; amount: number; account: string; bankCode: string; accountName: string }
+  | { ok: false; message: string } {
+  const pending = worker.pendingWithdrawal;
+  if (!pending) return { ok: false, message: "No withdrawal is awaiting confirmation. Start one first." };
+  if (Date.now() - pending.createdAt > PENDING_TTL_MS) {
+    worker.pendingWithdrawal = undefined;
+    return { ok: false, message: "The confirmation timed out. Please start the withdrawal again." };
+  }
+  if (!phraseMatches(spokenPhrase, pending.phrase)) {
+    return { ok: false, message: `That didn't match. Ask them to say the word "${pending.phrase}" to confirm.` };
+  }
+  worker.pendingWithdrawal = undefined;
+  return {
+    ok: true,
+    amount: pending.amount,
+    account: worker.payoutAccount!,
+    bankCode: worker.payoutBankCode!,
+    accountName: worker.payoutAccountName!,
+  };
+}
+
 // Real balance: sum of PAID inbound payments to the reserved account.
 export async function getBalance(): Promise<{ balance: number; account?: string }> {
   await ensureAccount();
@@ -96,6 +158,9 @@ export function snapshot() {
     accountNumber: worker.accountNumber,
     bankName: worker.bankName,
     payoutAccountName: worker.payoutAccountName,
+    awaitingWithdrawalConfirmation: worker.pendingWithdrawal
+      ? { amount: worker.pendingWithdrawal.amount }
+      : undefined,
     applications: worker.applications.map((a) => ({ ...a, job: getJob(a.jobId) })),
     jobs: JOBS,
   };

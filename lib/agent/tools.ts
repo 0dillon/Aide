@@ -73,25 +73,31 @@ export const tools = {
     },
   }),
 
-  initiate_withdrawal: tool({
-    description: "Withdraw an amount (Naira) to the worker's saved bank account. Requires explicit voice confirmation first. Returns the transfer status.",
-    parameters: z.object({ amount: z.number() }),
-    execute: async ({ amount }) => {
-      const w = store.getWorker();
-      if (!w.payoutAccount || !w.payoutBankCode || !w.payoutAccountName) {
-        return { ok: false, message: "No payout account saved yet. Register one first." };
-      }
+  prepare_withdrawal: tool({
+    description:
+      "Step 1 of 2 for a withdrawal. Arms a withdrawal of `amount` Naira to the saved payout account and returns a one-word confirmation phrase. Do NOT move money here. After calling, read the amount and account NAME back to the user, then tell them to say the returned `phrase` word aloud to confirm.",
+    parameters: z.object({ amount: z.number().describe("amount in Naira to withdraw") }),
+    execute: async ({ amount }) => store.armWithdrawal(amount),
+  }),
+
+  confirm_withdrawal: tool({
+    description:
+      "Step 2 of 2 for a withdrawal. Pass exactly what the user said when asked to confirm. Only call this after the user has spoken; never invent the phrase. If it matches the armed confirmation word, the real bank transfer runs and the status is returned.",
+    parameters: z.object({ spokenPhrase: z.string().describe("the exact words the user just spoke to confirm") }),
+    execute: async ({ spokenPhrase }) => {
+      const check = store.verifyWithdrawal(spokenPhrase);
+      if (!check.ok) return check;
       try {
         const r = await singleTransfer({
-          amount,
+          amount: check.amount,
           reference: `aide-wd-${randomUUID().slice(0, 8)}`,
           narration: "Aide withdrawal",
-          destinationAccountNumber: w.payoutAccount,
-          destinationBankCode: w.payoutBankCode,
-          destinationAccountName: w.payoutAccountName,
+          destinationAccountNumber: check.account,
+          destinationBankCode: check.bankCode,
+          destinationAccountName: check.accountName,
         });
         const pending = r.status === "PENDING_AUTHORIZATION";
-        return { ok: true, status: r.status, pending, message: pending ? "Withdrawal initiated and is being processed." : "Withdrawal completed." };
+        return { ok: true, status: r.status, pending, amount: check.amount, message: pending ? "Withdrawal initiated and is being processed." : "Withdrawal completed." };
       } catch (e) {
         return { ok: false, message: (e as Error).message };
       }

@@ -8,6 +8,7 @@ type State = {
   accountNumber?: string;
   bankName?: string;
   payoutAccountName?: string;
+  awaitingWithdrawalConfirmation?: { amount: number };
   applications: { id: string; jobId: string; status: string; verified: boolean; job?: { title: string; pay: number } }[];
   jobs: { id: string; title: string; pay: number; skill: string; employer: string }[];
 };
@@ -90,6 +91,15 @@ export default function Home() {
           <p className="text-neutral-400 text-sm">Earnings account</p>
           <p className="text-2xl font-mono">{state?.accountNumber ? `${state.accountNumber} · ${state.bankName}` : "—"}</p>
         </div>
+
+        {state?.awaitingWithdrawalConfirmation && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+            <p className="text-amber-300 text-sm font-medium">Awaiting spoken confirmation</p>
+            <p className="text-neutral-300 text-sm">
+              Withdrawal of ₦{state.awaitingWithdrawalConfirmation.amount.toLocaleString("en-NG")} armed — waiting for the user to say the confirm word aloud.
+            </p>
+          </div>
+        )}
 
         <div>
           <p className="text-neutral-400 text-sm mb-2">Applications</p>

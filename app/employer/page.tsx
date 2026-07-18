@@ -4,20 +4,41 @@ import { useCallback, useEffect, useState } from "react";
 
 type Worker = { name: string; accountNumber: string; bankName: string };
 
-const JOB = { title: "Audio transcription — 30 min interview", employer: "ClearVoice Media", amount: 12000 };
-const WEBSIM_URL = "https://websim.sdk.monnify.com/?#/bankingapp";
-const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
-
 export default function Employer() {
   const [worker, setWorker] = useState<Worker | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [job, setJob] = useState<{ title: string; employer: string; pay: number }>({
+    title: "Audio transcription — 30 min interview",
+    employer: "ClearVoice Media",
+    pay: 12000,
+  });
+  const WEBSIM_URL = "https://websim.sdk.monnify.com/?#/bankingapp";
+  const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 
   useEffect(() => {
     fetch("/api/worker")
       .then((r) => r.json())
       .then((d) => (d.error ? setError(d.error) : setWorker(d)))
       .catch((e) => setError(String(e)));
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const jobId = params.get("jobId");
+      if (jobId) {
+        fetch("/api/jobs")
+          .then((r) => r.json())
+          .then((d) => {
+            if (d.jobs) {
+              const found = d.jobs.find((j: any) => j.id === jobId);
+              if (found) {
+                setJob({ title: found.title, employer: found.employer, pay: found.pay });
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    }
   }, []);
 
   const copy = useCallback((label: string, value: string) => {
@@ -31,18 +52,18 @@ export default function Employer() {
       <div className="w-full max-w-xl">
         <header className="flex items-baseline justify-between border-b-2 border-neutral-900 pb-3">
           <span className="text-xs font-semibold uppercase tracking-[0.25em]">Payout desk</span>
-          <span className="text-xs text-neutral-500">{JOB.employer}</span>
+          <span className="text-xs text-neutral-500">{job.employer}</span>
         </header>
 
         <h1 className="mt-8 text-3xl font-black leading-tight tracking-tight">
           Pay the worker who finished
           <br />
-          <span className="italic font-serif font-normal">“{JOB.title}”</span>
+          <span className="italic font-serif font-normal">“{job.title}”</span>
         </h1>
 
         <div className="mt-8 flex items-end gap-3">
           <span className="text-neutral-500 text-sm mb-1">Amount due</span>
-          <span className="text-5xl font-black tabular-nums">{naira(JOB.amount)}</span>
+          <span className="text-5xl font-black tabular-nums">{naira(job.pay)}</span>
         </div>
 
         {error && <p className="mt-8 text-red-700">Couldn’t load the worker’s account: {error}</p>}

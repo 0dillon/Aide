@@ -5,12 +5,17 @@ type TokenCache = { token: string; expiresAt: number };
 let cached: TokenCache | null = null;
 
 async function call<T>(path: string, init: RequestInit): Promise<T> {
-  const res = await fetch(`${env.baseUrl}${path}`, init);
-  const body = (await res.json()) as { requestSuccessful: boolean; responseMessage: string; responseBody: T };
-  if (!res.ok || !body.requestSuccessful) {
-    throw new Error(`Monnify ${path} failed (${res.status}): ${body.responseMessage ?? "unknown error"}`);
+  try {
+    const res = await fetch(`${env.baseUrl}${path}`, init);
+    const body = (await res.json()) as { requestSuccessful: boolean; responseMessage: string; responseBody: T };
+    if (!res.ok || !body.requestSuccessful) {
+      throw new Error(`Monnify ${path} failed (${res.status}): ${body.responseMessage ?? "unknown error"}`);
+    }
+    return body.responseBody;
+  } catch (e) {
+    console.error(`[Monnify API Error] Fetch to ${path} failed:`, e);
+    throw e;
   }
-  return body.responseBody;
 }
 
 // Auth: Basic base64(apiKey:secretKey) -> bearer token (~1h). Cached until 60s before expiry.
@@ -58,13 +63,28 @@ export function createReservedAccount(input: {
   });
 }
 
-export type ReservedTxn = { amount: number; paymentStatus: string; transactionReference: string; customerDTO?: { name?: string } };
+// Fetch an existing reserved account by its reference — lets the app reuse
+// the same NUBAN across server restarts instead of trying to mint a new one
+// (Monnify allows only one reserved account per customer).
+export function getReservedAccount(accountReference: string): Promise<ReservedAccount> {
+  return authed<ReservedAccount>(`/api/v2/bank-transfer/reserved-accounts/${encodeURIComponent(accountReference)}`, "GET");
+}
+
+export type ReservedTxn = {
+  amount: number;
+  amountPaid?: number;
+  paymentStatus: string;
+  transactionReference: string;
+  paymentDescription?: string;
+  createdOn?: number | string;
+  customerDTO?: { name?: string };
+};
 
 // List payments made into a reserved account. This is how Aide confirms
 // (server-side) that money actually landed before announcing it.
 export function getReservedAccountTransactions(accountReference: string): Promise<{ content: ReservedTxn[] }> {
   const ref = encodeURIComponent(accountReference);
-  return authed(`/api/v1/bank-transfer/reserved-accounts/transactions?accountReference=${ref}&page=0&size=10`, "GET");
+  return authed(`/api/v1/bank-transfer/reserved-accounts/transactions?accountReference=${ref}&page=0&size=100`, "GET");
 }
 
 // Re-fetch a transaction server-side. NEVER trust a webhook payload alone.

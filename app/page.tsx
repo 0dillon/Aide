@@ -1,134 +1,148 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { useVoice } from "./useVoice";
+import { useEffect, useRef, useState } from "react";
+import { useAide } from "./aide";
 
-type Msg = { role: "user" | "assistant"; content: string };
-type State = {
-  accountNumber?: string;
-  bankName?: string;
-  payoutAccountName?: string;
-  awaitingWithdrawalConfirmation?: { amount: number };
-  applications: { id: string; jobId: string; status: string; verified: boolean; job?: { title: string; pay: number } }[];
-  jobs: { id: string; title: string; pay: number; skill: string; employer: string }[];
-};
+// Live input level straight from getUserMedia — separate from speech
+// recognition, so it shows whether the microphone is delivering ANY audio.
+// If this stays at zero while the user talks, Chrome is capturing the wrong
+// (or a muted) input device.
+function MicMeter() {
+  const [level, setLevel] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
 
-export default function Home() {
-  const [messages, setMessages] = useState<Msg[]>([]);
-  const [thinking, setThinking] = useState(false);
-  const [state, setState] = useState<State | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const messagesRef = useRef<Msg[]>([]);
-  messagesRef.current = messages;
-
-  const send = useCallback(async (text: string) => {
-    const next = [...messagesRef.current, { role: "user" as const, content: text }];
-    setMessages(next);
-    setThinking(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Aide had a problem.");
-      setMessages([...next, { role: "assistant", content: data.reply }]);
-      setState(data.state);
-      speak(data.reply);
-    } catch (e) {
-      const msg = (e as Error).message;
-      setError(msg);
-      speak("Sorry, something went wrong. " + msg);
-    } finally {
-      setThinking(false);
-    }
+  useEffect(() => {
+    let raf = 0;
+    let stream: MediaStream | null = null;
+    let audioCtx: AudioContext | null = null;
+    navigator.mediaDevices
+      ?.getUserMedia({ audio: true })
+      .then((s) => {
+        stream = s;
+        audioCtx = new AudioContext();
+        const src = audioCtx.createMediaStreamSource(s);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        src.connect(analyser);
+        const buf = new Uint8Array(analyser.fftSize);
+        const tick = () => {
+          analyser.getByteTimeDomainData(buf);
+          let peak = 0;
+          for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] - 128));
+          setLevel(Math.min(100, Math.round((peak / 128) * 200)));
+          raf = requestAnimationFrame(tick);
+        };
+        tick();
+      })
+      .catch(() => setFailed(true));
+    return () => {
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach((t) => t.stop());
+      audioCtx?.close();
+    };
   }, []);
 
-  const { listening, interim, supported, listen, speak } = useVoice(send);
+  if (failed) return <p className="text-sm font-bold text-[var(--alert)]">Mic check: could not open the microphone.</p>;
+  if (level === null) return <p className="text-sm text-[var(--ink-soft)]">Mic check: opening microphone…</p>;
+  return (
+    <div className="w-full max-w-sm">
+      <p className="text-sm font-bold text-[var(--ink-soft)]">
+        Mic level {level === 0 ? "— silent (wrong input device?)" : ""}
+      </p>
+      <div className="mt-1 h-3 w-full rounded-full border-2 border-[var(--line)] bg-white" aria-hidden="true">
+        <div
+          className="h-full rounded-full bg-[var(--accent)]"
+          style={{ width: `${level}%`, transition: "width 80ms linear" }}
+        />
+      </div>
+    </div>
+  );
+}
 
-  const lastAide = [...messages].reverse().find((m) => m.role === "assistant")?.content;
+// Aide's home: two halves. Left — Aide itself, always listening, glowing
+// while it speaks. Right — the running transcript of this session.
+export default function AidePage() {
+  const { active, listening, speaking, thinking, supported, interim, micStatus, error, messages, send, interrupt } = useAide();
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [messages, interim]);
+
+  const status = speaking
+    ? "Speaking…"
+    : thinking
+      ? "Thinking…"
+      : listening
+        ? "Listening"
+        : active
+          ? "Waking up…"
+          : "Off";
 
   return (
-    <main className="min-h-screen grid lg:grid-cols-[1.1fr_0.9fr]">
-      {/* Voice side — the primary, screen-free surface */}
-      <section className="flex flex-col items-center justify-center gap-10 p-8 lg:p-16">
-        <div className="text-center max-w-md">
-          <h1 className="text-5xl font-black tracking-tight">Aide</h1>
-          <p className="mt-3 text-lg text-neutral-600">Find work, prove your skills, and get paid — just talk.</p>
+    <main id="main" className="grid min-h-[calc(100vh-4rem)] lg:grid-cols-2">
+      {/* Left half — Aide, glowing while it speaks */}
+      <section aria-label="Talk to Aide" className="flex flex-col items-center justify-center gap-8 p-8 lg:p-14">
+        <div className="max-w-md text-center">
+          <h1 className="text-5xl font-bold tracking-tight">Aide</h1>
+          <p className="mt-3 text-lg text-[var(--ink-soft)]">Always listening. Find work, prove your skills, get paid — just talk.</p>
         </div>
 
         <button
-          onClick={listen}
-          aria-label={listening ? "Listening" : "Tap and speak to Aide"}
-          className="relative grid place-items-center w-44 h-44 rounded-full text-white text-xl font-bold shadow-xl transition-transform active:scale-95"
-          style={{ background: listening ? "#c0392b" : "#1f6feb" }}
+          onClick={interrupt}
+          aria-label={`Aide is ${status.toLowerCase().replace("…", "")}. Tap to interrupt Aide and speak.`}
+          className={`relative grid h-48 w-48 place-items-center rounded-full bg-[var(--accent)] text-xl font-bold text-white shadow-xl transition-transform active:scale-95 ${
+            speaking ? "aide-speaking" : ""
+          }`}
         >
-          {listening && (
-            <span className="absolute inset-0 rounded-full" style={{ background: "#c0392b", animation: "pulse-ring 1.4s ease-out infinite" }} />
+          {listening && !speaking && (
+            <span
+              aria-hidden="true"
+              className="absolute inset-0 rounded-full"
+              style={{ background: "var(--accent)", animation: "pulse-ring 2.2s ease-out infinite" }}
+            />
           )}
-          <span className="relative">{listening ? "Listening…" : thinking ? "Thinking…" : "Tap & speak"}</span>
+          <span className="relative">{status}</span>
         </button>
 
-        <div className="min-h-[6rem] text-center max-w-lg">
-          {interim && <p className="text-xl text-neutral-500 italic">“{interim}”</p>}
-          {lastAide && !interim && <p className="text-2xl font-medium leading-snug">{lastAide}</p>}
-          {!lastAide && !interim && <p className="text-neutral-400">Try: “Find me transcription jobs” or “What’s my balance?”</p>}
+        <p aria-live="polite" className="min-h-6 text-lg font-bold text-[var(--ink-soft)]">
+          {speaking ? "Aide is speaking — tap the circle to interrupt" : thinking ? "Aide is thinking" : listening ? "Aide is listening — just talk" : ""}
+        </p>
+
+        <div className="min-h-16 max-w-lg text-center">
+          {interim && <p className="text-xl italic text-[var(--ink-soft)]">“{interim}”</p>}
+          {!interim && messages.length === 0 && (
+            <p className="text-[var(--ink-soft)]">Try: “Find me transcription jobs” or “What’s my balance?”</p>
+          )}
         </div>
 
-        {!supported && <p className="text-red-600 max-w-md text-center">This browser has no speech recognition. Use Chrome, or type below.</p>}
-        {error && <p className="text-red-600 max-w-md text-center text-sm">{error}</p>}
+        {!supported && (
+          <p className="max-w-md text-center font-bold text-[var(--alert)]">
+            This browser has no speech recognition. Use Chrome, or type below.
+          </p>
+        )}
+        {error && <p className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
+
+        <div className="flex w-full max-w-sm flex-col items-center gap-2">
+          <p className="text-sm text-[var(--ink-soft)]">Hearing status: {micStatus}</p>
+          <MicMeter />
+        </div>
 
         <TypeFallback onSend={send} disabled={thinking} />
       </section>
 
-      {/* Observer side — for sighted judges and low-vision users */}
-      <aside className="bg-neutral-900 text-neutral-100 p-8 lg:p-12 flex flex-col gap-8">
-        <h2 className="text-sm uppercase tracking-widest text-neutral-400">Live view</h2>
-
-        <div>
-          <p className="text-neutral-400 text-sm">Earnings account</p>
-          <p className="text-2xl font-mono">{state?.accountNumber ? `${state.accountNumber} · ${state.bankName}` : "—"}</p>
-        </div>
-
-        {state?.awaitingWithdrawalConfirmation && (
-          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-            <p className="text-amber-300 text-sm font-medium">Awaiting spoken confirmation</p>
-            <p className="text-neutral-300 text-sm">
-              Withdrawal of ₦{state.awaitingWithdrawalConfirmation.amount.toLocaleString("en-NG")} armed — waiting for the user to say the confirm word aloud.
-            </p>
-          </div>
-        )}
-
-        <div>
-          <p className="text-neutral-400 text-sm mb-2">Applications</p>
-          {state?.applications?.length ? (
-            <ul className="space-y-2">
-              {state.applications.map((a) => (
-                <li key={a.id} className="flex items-center justify-between border-b border-neutral-800 pb-2">
-                  <span>{a.job?.title}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-800">
-                    {a.verified ? "verified" : a.status}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-neutral-600">No applications yet.</p>
-          )}
-        </div>
-
-        <div className="mt-auto">
-          <p className="text-neutral-400 text-sm mb-2">Transcript</p>
-          <div className="space-y-1 max-h-64 overflow-y-auto text-sm">
-            {messages.map((m, i) => (
-              <p key={i} className={m.role === "user" ? "text-blue-300" : "text-neutral-200"}>
-                <span className="text-neutral-500">{m.role === "user" ? "You: " : "Aide: "}</span>
-                {m.content}
-              </p>
-            ))}
-          </div>
+      {/* Right half — the session transcript */}
+      <aside aria-label="Conversation transcript" className="dark-surface flex flex-col bg-[var(--panel)] p-8 text-[var(--panel-ink)] lg:p-12">
+        <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--panel-soft)]">Transcript</h2>
+        <div ref={logRef} role="log" className="mt-4 flex-1 space-y-4 overflow-y-auto pr-2" style={{ maxHeight: "calc(100vh - 12rem)" }}>
+          {messages.length === 0 && <p className="text-[var(--panel-soft)]">Your conversation with Aide will appear here.</p>}
+          {messages.map((m, i) => (
+            <div key={i} className={m.role === "assistant" ? "border-l-4 border-[var(--glow)] pl-3" : "pl-3"}>
+              <p className="text-sm font-bold text-[var(--panel-soft)]">{m.role === "user" ? "You said" : "Aide said"}</p>
+              <p className="text-lg leading-relaxed">{m.content}</p>
+            </div>
+          ))}
+          {thinking && <p className="pl-3 italic text-[var(--panel-soft)]">Aide is thinking…</p>}
         </div>
       </aside>
     </main>
@@ -146,16 +160,24 @@ function TypeFallback({ onSend, disabled }: { onSend: (t: string) => void; disab
           setV("");
         }
       }}
-      className="flex gap-2 w-full max-w-lg"
+      className="flex w-full max-w-lg gap-2"
     >
+      <label htmlFor="type-to-aide" className="sr-only">
+        Type a message to Aide
+      </label>
       <input
+        id="type-to-aide"
         value={v}
         onChange={(e) => setV(e.target.value)}
         placeholder="…or type to Aide"
-        className="flex-1 rounded-lg border border-neutral-300 px-4 py-3 bg-white"
+        className="min-h-12 flex-1 rounded-lg border-2 border-[var(--line)] bg-white px-4 py-3 text-[var(--ink)]"
         disabled={disabled}
       />
-      <button type="submit" disabled={disabled} className="rounded-lg px-5 py-3 bg-neutral-900 text-white font-medium disabled:opacity-50">
+      <button
+        type="submit"
+        disabled={disabled}
+        className="min-h-12 rounded-lg bg-[var(--ink)] px-5 py-3 font-bold text-[var(--paper)] disabled:opacity-50"
+      >
         Send
       </button>
     </form>

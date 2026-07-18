@@ -1,23 +1,84 @@
+@import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap");
 @import "tailwindcss";
 
+/*
+  Accessibility-first design tokens.
+
+  - Font: Atkinson Hyperlegible (Braille Institute, made for low-vision
+    readers) — loaded via google fonts import at runtime.
+  - Palette: Okabe-Ito colorblind-safe hues, darkened where needed so body
+    text hits WCAG AAA (≥ 7:1) on the paper background. No red/green pairs.
+  - Color never carries meaning alone: every status also has a text label.
+*/
 :root {
-  --ink: #0a0a0a;
-  --paper: #f6f4ee;
-  --accent: #1f6feb;
+  --paper: #fffdf7;      /* warm off-white — less glare than pure white */
+  --ink: #191919;        /* ~15.8:1 on paper */
+  --ink-soft: #474e58;   /* secondary text, ~8.4:1 */
+  --accent: #005a9e;     /* blue — safe in all common CVD types, ~7.3:1 */
+  --accent-ink: #ffffff;
+  --alert: #9e3900;      /* dark vermillion for errors, ~7:1 */
+  --good: #006b54;       /* dark teal for success — always paired with text */
+  --warn-bg: #fff1cf;    /* amber notice background */
+  --warn-ink: #5f4a00;
+  --line: #b9b3a4;       /* borders on paper */
+  --panel: #10141a;      /* dark transcript panel */
+  --panel-ink: #f2efe6;
+  --panel-soft: #aab2bd;
+  --glow: #e69f00;       /* Okabe-Ito orange — Aide's speaking glow */
+  --focus: #005a9e;
 }
 
+html { font-size: 112.5%; } /* 18px base for low-vision readability */
+
 html, body {
+  font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   padding: 0;
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.6;
 }
 
 * { box-sizing: border-box; }
+
+/* Visible keyboard focus on both light and dark surfaces */
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.dark-surface :focus-visible { outline-color: #6fbbff; }
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 0.75rem 1.25rem;
+  font-weight: 700;
+}
+.skip-link:focus { left: 0.5rem; top: 0.5rem; }
 
 @keyframes pulse-ring {
   0% { transform: scale(0.9); opacity: 0.7; }
   70% { transform: scale(1.4); opacity: 0; }
   100% { opacity: 0; }
+}
+
+@keyframes aide-glow {
+  0%, 100% { box-shadow: 0 0 20px 6px rgba(230, 159, 0, 0.5); }
+  50% { box-shadow: 0 0 70px 26px rgba(230, 159, 0, 0.9); }
+}
+
+.aide-speaking { animation: aide-glow 1.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  /* Keep the "Aide is speaking" signal, just without motion */
+  .aide-speaking { box-shadow: 0 0 46px 16px rgba(230, 159, 0, 0.75); }
 }

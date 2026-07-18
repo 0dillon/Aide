@@ -27,11 +27,21 @@ Everything below is backed by **real Monnify sandbox calls**, not mocks (see
   third-party disbursement is gated behind full business KYC (see PROOF.md), so Aide
   narrates this honestly rather than faking success.
 
-## Demo flow (two screens)
+## Demo flow
 
-- **`/`** is the worker's voice screen. Tap, speak, get paid.
-- **`/employer`** is where an employer pays the worker. It surfaces the worker's **real**
+Three worker screens plus the employer desk:
+
+- **`/`** — talk to Aide. The orb glows while Aide speaks; the session transcript runs beside it.
+- **`/jobs`** — browse gigs, apply, and take the spoken assessment when the recruiter requires one.
+- **`/payments`** — confirmed balance, your real NUBAN for receiving pay, and two-step
+  voice-confirmed withdrawals.
+- **`/employer`** — where an employer pays the worker. It surfaces the worker's **real**
   reserved NUBAN and hands off to the Monnify simulator, so inbound money is real, not mocked.
+
+The UI is built for low-vision, blind, and colorblind users: Atkinson Hyperlegible type
+(designed by the Braille Institute), an Okabe-Ito colorblind-safe palette at WCAG-AAA
+contrast, 18px+ text, large touch targets, visible focus rings, reduced-motion support,
+and no status conveyed by color alone.
 
 ## The voice loop
 

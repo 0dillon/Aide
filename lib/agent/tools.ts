@@ -104,6 +104,17 @@ export function makeTools(account: Account) {
       },
     }),
 
+    assessment_time_left: tool({
+      description:
+        "How much time is left on the user's running, time-limited assessment. Call this when they ask how much time they have; report the remaining time honestly, then return to the current question.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        const t = store.timeRemaining(account.id, jobId);
+        if (!t) return { ok: false, message: "This assessment has no time limit, or it hasn't been started." };
+        return { ok: true, remainingSeconds: t.remaining, limitSeconds: t.limit };
+      },
+    }),
+
     submit_assessment: tool({
       description: "Submit the worker's answer(s) to the assessment. For oral assessments, pass 'answer' as the spoken text. For MCQ assessments, pass 'answers' as an array of 0-based option indices corresponding to the user's choice for each question.",
       parameters: z.object({

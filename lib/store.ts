@@ -243,6 +243,17 @@ export function clearAttempt(userId: string, jobId: string) {
   attempts.delete(`${userId}-${jobId}`);
 }
 
+// How long the worker has left on a running, time-limited assessment — lets
+// Aide answer "how much time do I have?" truthfully instead of guessing.
+export function timeRemaining(userId: string, jobId: string): { limit: number; remaining: number } | null {
+  const job = getJob(jobId);
+  if (!job?.timeLimit) return null;
+  const startedAt = attempts.get(`${userId}-${jobId}`);
+  if (!startedAt) return null;
+  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+  return { limit: job.timeLimit, remaining: Math.max(0, job.timeLimit - elapsed) };
+}
+
 // Strip correctIndex from MCQ questions so they are hidden from workers/agents
 export function publicJob(job: Job): Omit<Job, "mcqQuestions"> & { mcqQuestions?: Omit<McqQuestion, "correctIndex">[] } {
   const { mcqQuestions, ...rest } = job;
@@ -423,8 +434,13 @@ export function snapshot() {
     awaitingWithdrawalConfirmation: worker.pendingWithdrawal
       ? { amount: worker.pendingWithdrawal.amount }
       : undefined,
-    applications: worker.applications.map((a) => ({ ...a, job: getJob(a.jobId) })),
-    jobs: JOBS,
+    // Sanitized: this snapshot travels to the browser with every agent reply,
+    // so MCQ correct answers must never be in it.
+    applications: worker.applications.map((a) => {
+      const job = getJob(a.jobId);
+      return { ...a, job: job ? publicJob(job) : undefined };
+    }),
+    jobs: JOBS.map(publicJob),
   };
 }
 

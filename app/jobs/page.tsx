@@ -140,6 +140,21 @@ export default function JobsPage() {
     load();
   };
 
+  // Spoken countdown alerts as the limit approaches. Skipped when the alert
+  // equals the full limit (no point announcing "one minute left" at start).
+  const lastAlertRef = useRef<number | null>(null);
+  useEffect(() => {
+    lastAlertRef.current = null; // fresh assessment, fresh alerts
+  }, [assessment]);
+  useEffect(() => {
+    if (timeLeft === null || !assessment) return;
+    if (timeLeft === assessment.timeLimit) return;
+    if ((timeLeft === 60 || timeLeft === 30 || timeLeft === 10) && lastAlertRef.current !== timeLeft) {
+      lastAlertRef.current = timeLeft;
+      speak(timeLeft === 60 ? "One minute left." : timeLeft === 30 ? "Thirty seconds left." : "Ten seconds left.");
+    }
+  }, [timeLeft, assessment, speak]);
+
   const startAssessment = async (job: Job) => {
     setBusyJob(job.id);
     setError(null);
@@ -428,7 +443,18 @@ export default function JobsPage() {
               {assessment.assessmentType === "mcq" ? "Multiple Choice" : "Spoken Oral"} Assessment — {assessment.job.title}
             </h2>
             {timeLeft !== null && (
-              <div className="rounded-full bg-[var(--warn-bg)] px-4 py-1 text-lg font-bold text-[var(--warn-ink)]" aria-live="polite">
+              // Prominent countdown once time gets close; the ticking number is
+              // aria-live "off" — the spoken 60s/30s/10s alerts carry it to
+              // screen-reader and voice users without per-second spam.
+              <div
+                role="timer"
+                className={
+                  timeLeft <= 30
+                    ? "rounded-full px-5 py-2 text-2xl font-bold text-white"
+                    : "rounded-full bg-[var(--warn-bg)] px-4 py-1 text-lg font-bold text-[var(--warn-ink)]"
+                }
+                style={timeLeft <= 30 ? { background: "var(--alert)" } : undefined}
+              >
                 Time left: {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}
               </div>
             )}

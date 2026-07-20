@@ -146,7 +146,7 @@ export default function ProfilePage() {
           </section>
 
           {/* Spoken Bio / Resume Summary */}
-          <section aria-label="Spoken Bio / Resume" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+          <section id="bio" aria-label="Spoken Bio / Resume" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
             <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Spoken Bio / Resume</h2>
             <p className="mt-3 text-lg leading-relaxed whitespace-pre-wrap">
               {profile.bio || "No professional summary has been added yet. Edit your profile to add your resume or experience."}
@@ -154,7 +154,7 @@ export default function ProfilePage() {
           </section>
 
           {/* Self-Declared Skills */}
-          <section aria-label="Declared Skills" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+          <section id="skills" aria-label="Declared Skills" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
             <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Skills</h2>
             {profile.skills && profile.skills.length > 0 ? (
               <ul className="mt-3 flex flex-wrap gap-2">
@@ -182,7 +182,7 @@ export default function ProfilePage() {
             </section>
           )}
 
-          <section aria-label="Applications" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+          <section id="applications" aria-label="Applications" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
             <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Applications</h2>
             {profile.applications.length === 0 ? (
               <p className="mt-3 text-lg text-[var(--ink-soft)]">

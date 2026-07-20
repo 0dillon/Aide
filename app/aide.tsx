@@ -37,6 +37,27 @@ const AideContext = createContext<AideContextValue | null>(null);
 // strict mode does this).
 let greetedThisLoad = false;
 
+function getBestNativeVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
+  if (typeof window === "undefined" || !synth) return null;
+  const voices = synth.getVoices();
+  if (voices.length === 0) return null;
+  
+  // 1. Try en-NG (Nigerian English)
+  const ng = voices.find((v) => v.lang.toLowerCase().replace("_", "-") === "en-ng");
+  if (ng) return ng;
+  
+  // 2. Try high-quality English voices (Google, Siri, Microsoft Natural)
+  const prefs = ["natural", "google", "siri", "zira", "david", "samantha", "daniel", "hazel"];
+  const en = voices.filter((v) => v.lang.toLowerCase().startsWith("en"));
+  for (const p of prefs) {
+    const match = en.find((v) => v.name.toLowerCase().includes(p));
+    if (match) return match;
+  }
+  
+  if (en.length > 0) return en[0];
+  return null;
+}
+
 export function useAide() {
   const ctx = useContext(AideContext);
   if (!ctx) throw new Error("useAide must be used inside <AideProvider>");
@@ -61,6 +82,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   const thinkingRef = useRef(false);
   const captureRef = useRef<((t: string) => void) | null>(null);
   const currentUtterRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingSpeechRef = useRef<string | null>(null);
   const speechEndedAtRef = useRef(0);
   const messagesRef = useRef<Msg[]>([]);
@@ -195,8 +217,8 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   startRecognitionRef.current = startRecognition;
 
   const speak = useCallback(
-    (text: string) => {
-      if (typeof window === "undefined" || !window.speechSynthesis) return;
+    async (text: string) => {
+      if (typeof window === "undefined") return;
       // Pause the mic while Aide talks so it doesn't hear itself.
       speakingRef.current = true;
       setSpeaking(true);
@@ -204,8 +226,79 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       recRef.current?.abort();
       setListening(false);
 
+      // Stop any running neural audio
+      if (currentAudioRef.current) {
+        currentAudioRef.current.onended = null;
+        currentAudioRef.current.onerror = null;
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+
+      // Try server-side neural TTS
+      try {
+        const res = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+
+        if (res.ok) {
+          const blob = await res.blob();
+          const audioUrl = URL.createObjectURL(blob);
+          const audio = new Audio(audioUrl);
+          currentAudioRef.current = audio;
+
+          let audioStarted = false;
+          let watchdog = setTimeout(() => {
+            if (!audioStarted && currentAudioRef.current === audio) {
+              console.warn("Neural audio playback watchdog triggered. Resuming mic.");
+              resumeAudio();
+            }
+          }, 3000);
+
+          const resumeAudio = () => {
+            clearTimeout(watchdog);
+            audio.onended = null;
+            audio.onerror = null;
+            audio.pause();
+            try {
+              URL.revokeObjectURL(audioUrl);
+            } catch {}
+            if (currentAudioRef.current === audio) {
+              currentAudioRef.current = null;
+              speakingRef.current = false;
+              setSpeaking(false);
+              speechEndedAtRef.current = Date.now();
+              if (activeRef.current) startRecognition();
+            }
+          };
+
+          audio.onplay = () => {
+            audioStarted = true;
+          };
+          audio.onended = resumeAudio;
+          audio.onerror = (e) => {
+            console.error("Neural audio playback failed:", e);
+            resumeAudio();
+          };
+
+          await audio.play();
+          return;
+        }
+      } catch (err) {
+        console.warn("Neural TTS failed, falling back to browser-native:", err);
+      }
+
+      // Browser-Native SpeechSynthesis Fallback
+      if (!window.speechSynthesis) return;
+
       const u = new SpeechSynthesisUtterance(text);
-      u.lang = "en-NG";
+      const voice = getBestNativeVoice(window.speechSynthesis);
+      if (voice) {
+        u.voice = voice;
+      } else {
+        u.lang = "en-NG";
+      }
       // Mark this utterance as the current one BEFORE cancel(): the canceled
       // utterance's own end/error handlers must not resume the mic while this
       // new one is talking.
@@ -219,7 +312,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       let startWatchdog: ReturnType<typeof setTimeout> | null = null;
       let runawayWatchdog: ReturnType<typeof setTimeout> | null = null;
 
-      const resume = () => {
+      const resumeNative = () => {
         if (startWatchdog) clearTimeout(startWatchdog);
         if (runawayWatchdog) clearTimeout(runawayWatchdog);
         if (currentUtterRef.current !== u) return; // superseded
@@ -233,13 +326,13 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       u.onstart = () => {
         ttsStarted = true;
       };
-      u.onend = resume;
+      u.onend = resumeNative;
       u.onerror = (ev: any) => {
         // Chrome blocks speech before the first user interaction. Stash the
         // text; a document-level listener replays it on the first touch or
         // keypress — no visible gate, nothing the user has to find.
         if (ev?.error === "not-allowed") pendingSpeechRef.current = text;
-        resume();
+        resumeNative();
       };
 
       startWatchdog = setTimeout(() => {
@@ -247,14 +340,14 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
           console.warn("Aide TTS never started — no speech voices available? Resuming the mic.");
           setError("Aide can't speak aloud in this browser (no speech voices found) — it can still hear you and show replies as text.");
           window.speechSynthesis.cancel();
-          resume();
+          resumeNative();
         }
       }, 2500);
       // Generous per-text cap in case onend never fires mid-speech.
       runawayWatchdog = setTimeout(() => {
         if (currentUtterRef.current === u) {
           window.speechSynthesis.cancel();
-          resume();
+          resumeNative();
         }
       }, 10000 + text.length * 90);
 
@@ -280,7 +373,14 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         if (!res.ok || !data?.reply) throw new Error(data?.error || `Aide had a problem (status ${res.status}).`);
         setMessages([...next, { role: "assistant", content: data.reply }]);
         speak(data.reply);
-        if (data.navigateTo) router.push(data.navigateTo);
+        if (data.navigateTo) {
+          router.push(data.navigateTo);
+          // Follow Aide's words: scroll to the section it is talking about.
+          const hash = String(data.navigateTo).split("#")[1];
+          if (hash) {
+            setTimeout(() => document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" }), 700);
+          }
+        }
       } catch (e) {
         const msg = (e as Error).message;
         setError(msg);
@@ -355,8 +455,35 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     };
   }, [speak]);
 
+  // Live events from the server: Aide announces confirmed money the moment
+  // it lands, without being asked — the voice equivalent of a bank alert.
+  useEffect(() => {
+    const es = new EventSource("/api/events");
+    es.onmessage = (ev) => {
+      try {
+        const e = JSON.parse(ev.data);
+        if (e.type === "payment") {
+          const line = `Good news — ${e.amount} naira just landed in your account from ${e.from}. Say balance any time to hear your new total.`;
+          setMessages((m) => [...m, { role: "assistant", content: line }]);
+          speak(line);
+        } else if (e.type === "notify" && typeof e.message === "string") {
+          // Hiring decisions, and anything else the server wants said aloud.
+          setMessages((m) => [...m, { role: "assistant", content: e.message }]);
+          speak(e.message);
+        }
+      } catch {}
+    };
+    return () => es.close();
+  }, [speak]);
+
   // Tap Aide while it talks to cut it off and be heard immediately.
   const interrupt = useCallback(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.onended = null;
+      currentAudioRef.current.onerror = null;
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
     currentUtterRef.current = null;
     window.speechSynthesis?.cancel();
     speakingRef.current = false;

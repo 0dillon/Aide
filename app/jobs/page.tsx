@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAide } from "../aide";
 
 type Job = {
@@ -20,7 +21,16 @@ type Application = { id: string; jobId: string; status: string; verified: boolea
 
 const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 
+// useSearchParams needs a Suspense boundary in the app router.
 export default function JobsPage() {
+  return (
+    <Suspense fallback={<main id="main" className="mx-auto max-w-3xl px-4 py-10 sm:px-8"><p className="text-lg text-[var(--ink-soft)]">Loading jobs…</p></main>}>
+      <JobsPageInner />
+    </Suspense>
+  );
+}
+
+function JobsPageInner() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [apps, setApps] = useState<Application[]>([]);
   const [role, setRole] = useState<"worker" | "employer" | null>(null);
@@ -41,8 +51,37 @@ export default function JobsPage() {
   const [result, setResult] = useState<{ verified: boolean; message: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [showPost, setShowPost] = useState(false);
+  const [extJobs, setExtJobs] = useState<{ id: string; title: string; company: string; url: string; skill: string; source: string }[]>([]);
+  const [extApps, setExtApps] = useState<{ externalJobId: string; title: string; company: string; url: string; at: number }[]>([]);
+  const [scanning, setScanning] = useState(false);
 
   const { listening, capturing, interim, supported, speak, beginCapture, endCapture } = useAide();
+
+  // Job filters — URL-driven so Aide can fill them ("filter VA jobs paying
+  // 12 to 20 thousand") and the worker can adjust the same controls on screen.
+  const searchParams = useSearchParams();
+  const [fKeyword, setFKeyword] = useState("");
+  const [fMin, setFMin] = useState("");
+  const [fMax, setFMax] = useState("");
+  const [fReq, setFReq] = useState("any");
+  useEffect(() => {
+    setFKeyword(searchParams.get("keyword") ?? "");
+    setFMin(searchParams.get("minPay") ?? "");
+    setFMax(searchParams.get("maxPay") ?? "");
+    const r = searchParams.get("requiresAssessment");
+    setFReq(r === "true" ? "yes" : r === "false" ? "no" : "any");
+  }, [searchParams]);
+
+  const visibleJobs = jobs.filter((j) => {
+    const kw = fKeyword.trim().toLowerCase();
+    if (kw && !j.title.toLowerCase().includes(kw) && !j.skill.toLowerCase().includes(kw)) return false;
+    if (fMin && j.pay < Number(fMin)) return false;
+    if (fMax && j.pay > Number(fMax)) return false;
+    if (fReq === "yes" && !j.requiresAssessment) return false;
+    if (fReq === "no" && j.requiresAssessment) return false;
+    return true;
+  });
+  const filtersActive = !!(fKeyword.trim() || fMin || fMax || fReq !== "any");
 
   // Leaving the page mid-assessment must hand the mic back to Aide.
   const endCaptureRef = useRef(endCapture);
@@ -58,13 +97,57 @@ export default function JobsPage() {
     setEmployerName(data.employerName ?? "");
   }, []);
 
+  const loadExternal = useCallback(async () => {
+    const res = await fetch("/api/jobs/external");
+    const data = await res.json().catch(() => null);
+    setExtJobs(data?.jobs ?? []);
+    setExtApps(data?.applications ?? []);
+  }, []);
+
   useEffect(() => {
     load().catch((e) => setError(String(e)));
-  }, [load]);
+    loadExternal().catch(() => {});
+  }, [load, loadExternal]);
+
+  const scanExternal = async () => {
+    setScanning(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/jobs/external", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "scan" }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Could not scan for external jobs.");
+      setExtJobs(data.jobs ?? []);
+      speak(
+        data.jobs?.length
+          ? `I found ${data.jobs.length} listings on the web matching your skills. They are under external jobs.`
+          : "I could not find external listings matching your skills right now.",
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const trackExternal = async (id: string, title: string) => {
+    const res = await fetch("/api/jobs/external", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "track", id }),
+    });
+    if (res.ok) {
+      await loadExternal();
+      speak(`Tracking your application to ${title}.`);
+    }
+  };
 
   const appFor = (jobId: string) => apps.find((a) => a.jobId === jobId);
 
-  const changeStatus = async (jobId: string, action: "hire" | "pay") => {
+  const changeStatus = async (jobId: string, action: "hire" | "reject" | "pay") => {
     setBusyJob(jobId);
     setError(null);
     try {
@@ -76,7 +159,13 @@ export default function JobsPage() {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || `Could not ${action} worker.`);
       await load();
-      speak(action === "hire" ? "Worker has been hired." : "Worker has been marked as paid.");
+      speak(
+        action === "hire"
+          ? "Worker has been hired. Aide is letting them know now."
+          : action === "reject"
+            ? "Applicant declined. Aide is letting them know kindly."
+            : "Worker has been marked as paid.",
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -307,7 +396,7 @@ export default function JobsPage() {
           </p>
         )}
 
-        <ul className="mt-8 space-y-5">
+        <ul id="listings" className="mt-8 space-y-5">
           {jobs.map((job) => {
             const jobApps = apps.filter((a) => a.jobId === job.id);
             return (
@@ -341,7 +430,18 @@ export default function JobsPage() {
                                 <p className="text-lg font-bold">{app.workerName || "Worker"}</p>
                                 <p className="text-sm text-[var(--ink-soft)]">
                                   Status: <span className="font-bold">{app.status}</span>
+                                  {app.assessmentResult && (
+                                    <span className="ml-2 rounded-full border border-[var(--accent)] px-2 py-0.5 font-bold text-[var(--accent)]">
+                                      {app.assessmentResult}
+                                    </span>
+                                  )}
                                 </p>
+                                {app.workerSkills?.length > 0 && (
+                                  <p className="mt-1 text-sm text-[var(--ink-soft)]">Skills: {app.workerSkills.join(", ")}</p>
+                                )}
+                                {app.workerBio && (
+                                  <p className="mt-1 max-w-md text-sm italic text-[var(--ink-soft)]">“{app.workerBio}”</p>
+                                )}
                               </div>
                               <div className="flex flex-wrap items-center gap-3">
                                 {app.status === "applied" && (
@@ -360,7 +460,20 @@ export default function JobsPage() {
                                     >
                                       Hire Worker
                                     </button>
+                                    <button
+                                      onClick={() => changeStatus(job.id, "reject")}
+                                      disabled={busyJob === job.id}
+                                      className="min-h-10 rounded-lg border-2 border-[var(--alert)] px-4 py-2 text-sm font-bold text-[var(--alert)] disabled:opacity-50"
+                                    >
+                                      Decline
+                                    </button>
                                   </>
+                                )}
+
+                                {app.status === "rejected" && (
+                                  <span className="rounded-full border-2 border-[var(--ink-soft)] px-3 py-0.5 text-sm font-bold text-[var(--ink-soft)]">
+                                    Declined
+                                  </span>
                                 )}
 
                                 {app.status === "hired" && (
@@ -560,8 +673,50 @@ export default function JobsPage() {
         </section>
       )}
 
-      <ul className="mt-8 space-y-5">
-        {jobs.map((job) => {
+      <section id="filters" aria-label="Job filters" className="mt-8 rounded-xl border-2 border-[var(--line)] bg-white p-5">
+        <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Filter jobs</h2>
+        <p className="mt-1 text-sm text-[var(--ink-soft)]">Fill these in, or just tell Aide — “show transcription jobs paying twelve to twenty thousand”.</p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <div>
+            <label htmlFor="f-kw" className="block text-sm font-bold">Keyword or skill</label>
+            <input id="f-kw" value={fKeyword} onChange={(e) => setFKeyword(e.target.value)} placeholder="e.g. transcription"
+              className="mt-1 min-h-12 w-52 rounded-lg border-2 border-[var(--line)] bg-white px-3 text-lg" />
+          </div>
+          <div>
+            <label htmlFor="f-min" className="block text-sm font-bold">Min pay (₦)</label>
+            <input id="f-min" value={fMin} onChange={(e) => setFMin(e.target.value)} inputMode="numeric" placeholder="12000"
+              className="mt-1 min-h-12 w-32 rounded-lg border-2 border-[var(--line)] bg-white px-3 text-lg" />
+          </div>
+          <div>
+            <label htmlFor="f-max" className="block text-sm font-bold">Max pay (₦)</label>
+            <input id="f-max" value={fMax} onChange={(e) => setFMax(e.target.value)} inputMode="numeric" placeholder="20000"
+              className="mt-1 min-h-12 w-32 rounded-lg border-2 border-[var(--line)] bg-white px-3 text-lg" />
+          </div>
+          <div>
+            <label htmlFor="f-req" className="block text-sm font-bold">Assessment</label>
+            <select id="f-req" value={fReq} onChange={(e) => setFReq(e.target.value)}
+              className="mt-1 min-h-12 rounded-lg border-2 border-[var(--line)] bg-white px-3 text-lg">
+              <option value="any">Any</option>
+              <option value="yes">Required</option>
+              <option value="no">Not required</option>
+            </select>
+          </div>
+          {filtersActive && (
+            <button onClick={() => { setFKeyword(""); setFMin(""); setFMax(""); setFReq("any"); }}
+              className="min-h-12 rounded-lg border-2 border-[var(--ink)] px-4 font-bold">
+              Clear filters
+            </button>
+          )}
+        </div>
+        {filtersActive && (
+          <p role="status" className="mt-3 font-bold text-[var(--accent)]">
+            Showing {visibleJobs.length} of {jobs.length} jobs
+          </p>
+        )}
+      </section>
+
+      <ul id="listings" className="mt-8 space-y-5">
+        {visibleJobs.map((job) => {
           const app = appFor(job.id);
           return (
             <li key={job.id}>
@@ -624,6 +779,84 @@ export default function JobsPage() {
         })}
       </ul>
       {jobs.length === 0 && !error && <p className="mt-8 text-lg text-[var(--ink-soft)]">Loading jobs…</p>}
+      {jobs.length > 0 && visibleJobs.length === 0 && (
+        <p className="mt-8 text-lg text-[var(--ink-soft)]">No jobs match these filters — clear them or ask Aide to broaden the search.</p>
+      )}
+
+      {/* External jobs — real listings Aide found on the open web */}
+      <section id="external" aria-label="External jobs" className="mt-10 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-2xl font-bold">External jobs</h2>
+          <button
+            onClick={scanExternal}
+            disabled={scanning}
+            className="min-h-12 rounded-lg bg-[var(--accent)] px-5 py-3 font-bold text-white disabled:opacity-50"
+          >
+            {scanning ? "Scanning the web…" : "Scan the web for jobs matching my skills"}
+          </button>
+        </div>
+        <p className="mt-1 text-[var(--ink-soft)]">
+          Real remote listings from the open web, matched to your skills. Aide opens the listing and tracks your
+          application — or just say “find me jobs on the web”.
+        </p>
+
+        {extJobs.length === 0 ? (
+          <p className="mt-4 text-lg text-[var(--ink-soft)]">No external listings yet — run a scan.</p>
+        ) : (
+          <ul className="mt-4 divide-y divide-[var(--line)]">
+            {extJobs.map((j) => {
+              const tracked = extApps.some((a) => a.externalJobId === j.id);
+              return (
+                <li key={j.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                  <div>
+                    <p className="text-lg font-bold">{j.title}</p>
+                    <p className="text-sm text-[var(--ink-soft)]">
+                      {j.company} · matched skill: {j.skill} · via {j.source}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={j.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-h-10 inline-flex items-center rounded-lg border-2 border-[var(--ink)] px-4 py-1 font-bold"
+                    >
+                      Open listing
+                    </a>
+                    {tracked ? (
+                      <span className="rounded-full border-2 border-[var(--good)] px-3 py-0.5 font-bold text-[var(--good)]">
+                        ✓ Tracked
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => trackExternal(j.id, j.title)}
+                        className="min-h-10 rounded-lg border-2 border-[var(--accent)] px-4 py-1 font-bold text-[var(--accent)]"
+                      >
+                        I applied — track it
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {extApps.length > 0 && (
+          <div className="mt-6 border-t-2 border-[var(--line)] pt-4">
+            <h3 className="text-lg font-bold">My external submissions</h3>
+            <ul className="mt-2 space-y-1">
+              {extApps.map((a) => (
+                <li key={a.externalJobId} className="text-[var(--ink-soft)]">
+                  {a.title} at {a.company} —{" "}
+                  {new Date(a.at).toLocaleDateString("en-NG", { day: "numeric", month: "short" })} ·{" "}
+                  <span className="font-bold text-[var(--good)]">✓ tracked</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
     </main>
   );
 }
@@ -661,12 +894,37 @@ function PostGigModal({ onClose, onPosted }: { onClose: () => void; onPosted: (t
   endCaptureRef.current = endCapture;
   useEffect(() => () => endCaptureRef.current(), []);
 
+  // Escape closes; Tab is trapped inside the dialog (screen-reader and
+  // keyboard users must not fall through into the page behind); focus returns
+  // to whatever opened the modal when it closes.
+  const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !dialogRef.current) return;
+      const focusables = [...dialogRef.current.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href]")].filter(
+        (n) => !n.hasAttribute("disabled"),
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      opener?.focus?.();
+    };
   }, [onClose]);
 
   const toggleDictation = () => {
@@ -782,6 +1040,7 @@ function PostGigModal({ onClose, onPosted }: { onClose: () => void; onPosted: (t
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={onClose}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Post a new gig"

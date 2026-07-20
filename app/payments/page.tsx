@@ -65,12 +65,14 @@ export default function PaymentsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/payments/summary");
+      // Summary and history in parallel — history is secondary, never fails the page.
+      const [res, h] = await Promise.all([
+        fetch("/api/payments/summary"),
+        fetch("/api/payments/transactions").then((r) => r.json()).catch(() => null),
+      ]);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not load your payment details.");
       setSummary(data);
-      // History is secondary — don't fail the page over it.
-      const h = await fetch("/api/payments/transactions").then((r) => r.json()).catch(() => null);
       if (h && !h.error) setHistory(h);
     } catch (e) {
       setError((e as Error).message);
@@ -197,7 +199,7 @@ export default function PaymentsPage() {
       )}
 
       {/* Balance */}
-      <section aria-label="Balance" className="mt-8 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+      <section id="balance" aria-label="Balance" className="mt-8 rounded-xl border-2 border-[var(--line)] bg-white p-6">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Confirmed balance</h2>
         <p className="mt-2 text-5xl font-bold tabular-nums">{loading ? "…" : summary ? naira(summary.balance) : "—"}</p>
         <div className="mt-4 flex flex-wrap gap-3">
@@ -219,7 +221,7 @@ export default function PaymentsPage() {
       </section>
 
       {/* Receiving */}
-      <section aria-label="Receive money" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+      <section id="receive" aria-label="Receive money" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Receive money</h2>
         <p className="mt-2 text-lg">Anyone can pay you by bank transfer to your real earnings account:</p>
         <dl className="mt-4 divide-y divide-[var(--line)] border-y border-[var(--line)]">
@@ -237,7 +239,7 @@ export default function PaymentsPage() {
       </section>
 
       {/* Sending / withdrawal */}
-      <section aria-label="Send money" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+      <section id="send" aria-label="Send money" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Send money (withdraw)</h2>
 
         {!summary?.payoutAccountName ? (
@@ -355,7 +357,7 @@ export default function PaymentsPage() {
       </section>
 
       {/* Transaction history */}
-      <section aria-label="Transaction history" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+      <section id="history" aria-label="Transaction history" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Transaction history</h2>
 
         <h3 className="mt-4 text-lg font-bold">Money in</h3>

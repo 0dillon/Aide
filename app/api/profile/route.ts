@@ -1,4 +1,4 @@
-import { getAccount, getApplications, getBalance, getJob, getWorker, listJobs, updateProfile } from "@/lib/store";
+import { getAccount, getApplications, getBalance, getJob, getWorker, listJobs, publicAccount, updateProfile } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     const apps = getApplications();
     const completed = posted.filter((j) => apps.some((a) => a.jobId === j.id && a.verified));
     return Response.json({
-      account: acc,
+      account: publicAccount(acc),
       role: "employer",
       jobsPosted: posted,
       jobsCompleted: completed.map((j) => j.id),
@@ -32,7 +32,7 @@ export async function GET(req: Request) {
   const applications = getApplications().map((a) => ({ ...a, job: getJob(a.jobId) }));
   const verified = applications.filter((a) => a.verified);
   return Response.json({
-    account: acc,
+    account: publicAccount(acc),
     role: "worker",
     applications,
     completedJobs: verified.length,

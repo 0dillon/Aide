@@ -10,6 +10,7 @@ export default function SignupPage() {
   const [role, setRole] = useState<"worker" | "employer" | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
@@ -27,7 +28,7 @@ export default function SignupPage() {
       const res = await fetch("/api/account", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, role, email }),
+        body: JSON.stringify({ name, role, email, password: password || undefined }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not create the account.");
@@ -100,16 +101,39 @@ export default function SignupPage() {
 
         <div>
           <label htmlFor="su-email" className="block text-xl font-bold">
-            Email <span className="font-normal text-[var(--ink-soft)]">(optional)</span>
+            Email <span className="font-normal text-[var(--ink-soft)]">(required for a login)</span>
           </label>
           <input
             id="su-email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
             className="mt-2 w-full max-w-md rounded-lg border-2 border-[var(--line)] bg-white px-4 py-3 text-lg"
           />
         </div>
+
+        <div>
+          <label htmlFor="su-password" className="block text-xl font-bold">
+            Password <span className="font-normal text-[var(--ink-soft)]">(at least 8 characters — leave blank for a demo identity)</span>
+          </label>
+          <input
+            id="su-password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            minLength={8}
+            autoComplete="new-password"
+            className="mt-2 w-full max-w-md rounded-lg border-2 border-[var(--line)] bg-white px-4 py-3 text-lg"
+          />
+        </div>
+
+        <p className="text-[var(--ink-soft)]">
+          Already have an account?{" "}
+          <a href="/login" className="font-bold text-[var(--accent)] underline underline-offset-2">
+            Log in
+          </a>
+        </p>
 
         <button
           type="submit"

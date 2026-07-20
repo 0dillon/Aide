@@ -15,6 +15,8 @@ export async function GET(req: Request) {
     return {
       ...a,
       workerName: w.name,
+      workerSkills: w.skills ?? [],
+      workerBio: w.bio ?? "",
       job: sanitizedJob
     };
   });

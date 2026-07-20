@@ -21,3 +21,8 @@ Thumbs.db
 
 # IDE / agent caches
 .claude/
+
+# Python virtual environments
+tts-env/
+venv/
+.venv/

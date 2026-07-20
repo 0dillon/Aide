@@ -25,22 +25,61 @@ export type Job = {
   mcqQuestions?: McqQuestion[];
   timeLimit?: number; // in seconds (optional)
 };
-export type Application = { id: string; jobId: string; status: "applied" | "assessed" | "hired" | "paid"; verified: boolean };
+export type Application = {
+  id: string;
+  jobId: string;
+  status: "applied" | "assessed" | "hired" | "rejected" | "paid";
+  verified: boolean;
+  // Human-readable assessment outcome for the employer, e.g. "MCQ: 2 of 2 (100%)".
+  assessmentResult?: string;
+};
+
+// External listings Aide found on the open web, matched to the worker's skills.
+export type ExternalJob = { id: string; title: string; company: string; url: string; skill: string; source: string };
+export type ExternalApplication = { id: string; externalJobId: string; title: string; company: string; url: string; status: "tracked"; at: number };
 
 // Accounts are demo-grade on purpose: a name and a chosen role, no passwords.
 // The signed-in account travels in an `aide-user` cookie; unknown or absent
 // ids fall back to the seeded demo worker so every flow still works cold.
 export type Role = "worker" | "employer";
-export type Account = { id: string; name: string; email?: string; role: Role; createdAt: number };
+export type Account = {
+  id: string;
+  name: string;
+  email?: string;
+  role: Role;
+  createdAt: number;
+  // Present on real credentialed accounts; absent on the passwordless demo
+  // identities. Never leaves the server — always strip via publicAccount().
+  passwordHash?: string;
+};
 
-export function createAccount(name: string, role: Role, email?: string): Account {
-  const acc: Account = { id: `u-${randomUUID().slice(0, 8)}`, name: name.trim(), email, role, createdAt: Date.now() };
+// The only shape of an account that may be serialized to the browser.
+export function publicAccount(a: Account): Omit<Account, "passwordHash"> & { authenticated: boolean } {
+  const { passwordHash, ...rest } = a;
+  return { ...rest, authenticated: !!passwordHash };
+}
+
+export function findAccountByEmail(email: string): Account | undefined {
+  const q = email.trim().toLowerCase();
+  return [...accounts.values()].find((a) => a.email?.toLowerCase() === q);
+}
+
+export function createAccount(name: string, role: Role, email?: string, passwordHash?: string): Account {
+  const acc: Account = { id: `u-${randomUUID().slice(0, 8)}`, name: name.trim(), email, role, createdAt: Date.now(), passwordHash };
   accounts.set(acc.id, acc);
   return acc;
 }
 
 export function getAccount(id?: string | null): Account {
   return (id && accounts.get(id)) || accounts.get("demo-worker")!;
+}
+
+export function listAccounts(): Account[] {
+  return [...accounts.values()];
+}
+
+export function hasAccount(id: string): boolean {
+  return accounts.has(id);
 }
 
 // A record of money leaving via voice-confirmed withdrawal — Monnify has no
@@ -103,7 +142,24 @@ function phraseMatches(spoken: string, phrase: string): boolean {
 // separately, so a plain module-level singleton silently forks into one copy
 // per route — applications created by /api/jobs/apply would be invisible to
 // /api/jobs/status. globalThis is shared by the whole Node process.
-type StoreState = { worker: Worker; accounts: Map<string, Account>; withdrawals: WithdrawalRecord[]; jobs: Job[]; attempts?: Map<string, number> };
+export type AideEvent =
+  | { type: "payment"; amount: number; from: string; reference: string }
+  | { type: "notify"; message: string };
+type Subscriber = (e: AideEvent) => void;
+
+type StoreState = {
+  worker: Worker;
+  accounts: Map<string, Account>;
+  withdrawals: WithdrawalRecord[];
+  jobs: Job[];
+  attempts?: Map<string, number>;
+  subscribers?: Set<Subscriber>;
+  knownTxRefs?: Set<string>;
+  txSeeded?: boolean;
+  pollTimer?: ReturnType<typeof setInterval>;
+  externalJobs?: ExternalJob[];
+  externalApps?: ExternalApplication[];
+};
 
 function seedState(): StoreState {
   const w: Worker = {
@@ -127,6 +183,94 @@ const state = (g.__aideStore ??= seedState());
 state.jobs ??= [...SEED_JOBS];
 state.withdrawals ??= [];
 state.attempts ??= new Map<string, number>();
+state.subscribers ??= new Set();
+state.knownTxRefs ??= new Set();
+state.externalJobs ??= [];
+state.externalApps ??= [];
+
+export function setExternalJobs(jobs: ExternalJob[]): void {
+  state.externalJobs = jobs;
+}
+export function getExternalJobs(): ExternalJob[] {
+  return state.externalJobs!;
+}
+export function getExternalApplications(): ExternalApplication[] {
+  return [...state.externalApps!].sort((a, b) => b.at - a.at);
+}
+// Record that the worker applied to an external listing so Aide can track it.
+export function trackExternalJob(externalJobId: string): ExternalApplication | undefined {
+  const job = state.externalJobs!.find((j) => j.id === externalJobId);
+  if (!job) return undefined;
+  const existing = state.externalApps!.find((a) => a.externalJobId === externalJobId);
+  if (existing) return existing;
+  const app: ExternalApplication = {
+    id: randomUUID().slice(0, 8),
+    externalJobId,
+    title: job.title,
+    company: job.company,
+    url: job.url,
+    status: "tracked",
+    at: Date.now(),
+  };
+  state.externalApps!.push(app);
+  return app;
+}
+
+// --- Live events: confirmed payments pushed to the browser so Aide can
+// announce money the moment it lands, unprompted. The Monnify webhook route
+// publishes instantly when Monnify can reach the server; the poller below is
+// the fallback that makes local demos work without a public tunnel.
+
+export function publishEvent(e: AideEvent): void {
+  if (e.type === "payment") {
+    if (state.knownTxRefs!.has(e.reference)) return; // already announced
+    state.knownTxRefs!.add(e.reference);
+  }
+  for (const fn of state.subscribers!) {
+    try {
+      fn(e);
+    } catch {}
+  }
+}
+
+export function subscribeEvents(fn: Subscriber): () => void {
+  state.subscribers!.add(fn);
+  ensurePolling();
+  return () => state.subscribers!.delete(fn);
+}
+
+let pollBusy = false;
+function ensurePolling(): void {
+  if (state.pollTimer) return;
+  state.pollTimer = setInterval(async () => {
+    if (state.subscribers!.size === 0 || pollBusy || !worker.accountReference) return;
+    pollBusy = true;
+    try {
+      const { content } = await getReservedAccountTransactions(worker.accountReference);
+      cacheBalance(content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0));
+      if (!state.txSeeded) {
+        // First look: remember history without announcing it as news.
+        for (const t of content) state.knownTxRefs!.add(t.transactionReference);
+        state.txSeeded = true;
+        return;
+      }
+      for (const t of content) {
+        if (t.paymentStatus === "PAID" && !state.knownTxRefs!.has(t.transactionReference)) {
+          publishEvent({
+            type: "payment",
+            amount: t.amountPaid ?? t.amount,
+            from: t.customerDTO?.name ?? "a bank transfer",
+            reference: t.transactionReference,
+          });
+        }
+      }
+    } catch {
+      /* transient — next tick retries */
+    } finally {
+      pollBusy = false;
+    }
+  }, 15000);
+}
 const worker = state.worker;
 const accounts = state.accounts;
 const withdrawals = state.withdrawals;
@@ -263,28 +407,47 @@ export function publicJob(job: Job): Omit<Job, "mcqQuestions"> & { mcqQuestions?
   };
 }
 
-// Grade a spoken assessment answer. Deliberately lenient: the bar is an
-// on-topic, substantive spoken answer, not an essay.
-export function gradeAssessment(jobId: string, answer: string): { verified: boolean; message: string } {
+// Grade a spoken assessment answer (legacy wrapper).
+export function gradeAssessment(jobId: string, answer: string): Promise<{ verified: boolean; message: string }> {
   return gradeOralAssessment("demo-worker", jobId, answer);
 }
 
-export function gradeOralAssessment(userId: string, jobId: string, answer: string): { verified: boolean; message: string } {
+export async function gradeOralAssessment(userId: string, jobId: string, answer: string): Promise<{ verified: boolean; message: string }> {
   const job = getJob(jobId);
   if (!job) return { verified: false, message: "Job not found." };
-  
+
   const timeCheck = checkTimeLimit(userId, jobId, job.timeLimit);
   if (timeCheck.expired) {
     clearAttempt(userId, jobId);
     return { verified: false, message: `Time limit exceeded. You took ${timeCheck.elapsed} seconds, but the limit was ${timeCheck.limit} seconds.` };
   }
-  
+
   clearAttempt(userId, jobId);
-  const passed = answer.trim().split(/\s+/).length >= 8;
-  if (passed) markVerified(jobId);
+  // Rubric grading by the model (fair, unbiased, no answer reveals); falls
+  // back to a length heuristic when no model is available.
+  const { gradeOral } = await import("./grading");
+  const result = await gradeOral(job, answer);
+  if (result.verified) markVerified(jobId);
+  recordAssessmentResult(jobId, result.verified ? "Oral assessment: passed" : "Oral assessment: not passed");
+  return result;
+}
+
+// Payment truth: a gig may only be marked paid when confirmed inbound money
+// (real, from Monnify) covers it on top of everything already claimed by
+// other paid gigs. The button obeys the same rule as the model: never state
+// a payment that didn't verifiably happen.
+export async function verifyPaymentCoverage(jobId: string): Promise<{ ok: boolean; message: string }> {
+  const job = getJob(jobId);
+  if (!job) return { ok: false, message: "No job with that id." };
+  const { balance } = await getBalance();
+  const alreadyClaimed = worker.applications
+    .filter((a) => a.status === "paid")
+    .reduce((s, a) => s + (getJob(a.jobId)?.pay ?? 0), 0);
+  if (balance >= alreadyClaimed + job.pay) return { ok: true, message: "Confirmed payment covers this gig." };
+  const short = alreadyClaimed + job.pay - balance;
   return {
-    verified: passed,
-    message: passed ? "Skill verified." : "That answer was too brief — please say a bit more about how you would approach the task.",
+    ok: false,
+    message: `No confirmed payment covers this gig yet. The worker's confirmed inbound total is ${balance} naira and ${alreadyClaimed} naira is already claimed by other paid gigs — ${short} naira more must land first. Send the pay from the payout desk, then try again.`,
   };
 }
 
@@ -313,8 +476,9 @@ export function gradeMcqAssessment(userId: string, jobId: string, answers: numbe
   
   const scorePct = (correctCount / questions.length) * 100;
   const passed = scorePct >= 70;
-  
+
   if (passed) markVerified(jobId);
+  recordAssessmentResult(jobId, `MCQ: ${correctCount} of ${questions.length} (${Math.round(scorePct)}%)`);
   return {
     verified: passed,
     score: correctCount,
@@ -340,6 +504,21 @@ export function hireWorker(jobId: string): Application | undefined {
     app.status = "hired";
   }
   return app;
+}
+
+export function rejectWorker(jobId: string): Application | undefined {
+  const app = worker.applications.find((a) => a.jobId === jobId);
+  if (app) {
+    app.status = "rejected";
+  }
+  return app;
+}
+
+// Attach a readable assessment outcome to the application so the employer
+// can see how the applicant actually did.
+export function recordAssessmentResult(jobId: string, text: string): void {
+  const app = worker.applications.find((a) => a.jobId === jobId);
+  if (app) app.assessmentResult = text;
 }
 
 export function payWorker(jobId: string): Application | undefined {
@@ -418,11 +597,25 @@ export function verifyWithdrawal(spokenPhrase: string):
 }
 
 // Real balance: sum of PAID inbound payments to the reserved account.
+// Short-lived balance cache: the greeting, payments page, and profile all
+// want the balance; without this each pays the full Monnify round trip. The
+// events poller refreshes it for free every 15s while anyone is listening.
+const BALANCE_TTL_MS = 20_000;
+let balanceCache: { value: number; at: number } | null = null;
+
+export function cacheBalance(value: number): void {
+  balanceCache = { value, at: Date.now() };
+}
+
 export async function getBalance(): Promise<{ balance: number; account?: string }> {
+  if (balanceCache && Date.now() - balanceCache.at < BALANCE_TTL_MS && worker.accountNumber) {
+    return { balance: balanceCache.value, account: worker.accountNumber };
+  }
   await ensureAccount();
   if (!worker.accountReference) return { balance: 0 };
   const { content } = await getReservedAccountTransactions(worker.accountReference);
   const balance = content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0);
+  cacheBalance(balance);
   return { balance, account: worker.accountNumber };
 }
 

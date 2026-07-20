@@ -33,9 +33,14 @@ export async function GET(req: Request) {
 
   const parts: string[] = [`${hello}, I'm Aide, your work and pay assistant. I'm listening — just talk to me.`];
 
+  // Never let Monnify delay Aide's first words: if the balance isn't back in
+  // 2.5s, greet without the money line (usually served from cache anyway).
   let balance: number | null = null;
   try {
-    balance = (await getBalance()).balance;
+    balance = await Promise.race<number | null>([
+      getBalance().then((b) => b.balance),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    ]);
   } catch {
     /* greet without the money line */
   }

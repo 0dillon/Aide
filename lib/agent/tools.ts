@@ -13,8 +13,42 @@ export function makeTools(account: Account) {
     open_page: tool({
       description:
         "Open one of Aide's screens for the user: 'home' (talking to Aide), 'jobs' (job listings and spoken assessments; for employers, their posted gigs), 'payments' (balance, receiving money, withdrawals), 'profile' (their account, completed jobs, verified skills), or 'signup' (create an account). Use when the user asks to go to, open, or see one of these screens. A small version of you follows them there, so keep talking naturally.",
-      parameters: z.object({ page: z.enum(["home", "jobs", "payments", "profile", "signup"]) }),
-      execute: async ({ page }) => ({ ok: true, page }),
+      parameters: z.object({
+        page: z.enum(["home", "jobs", "payments", "profile", "signup"]),
+        section: z
+          .enum(["listings", "external", "balance", "receive", "send", "history", "bio", "skills", "applications"])
+          .optional()
+          .describe(
+            "scroll to the part being discussed — jobs: listings|external; payments: balance|receive|send|history; profile: bio|skills|applications",
+          ),
+      }),
+      execute: async ({ page, section }) => ({ ok: true, page, section }),
+    }),
+
+    filter_jobs: tool({
+      description:
+        "Filter the jobs page for the worker — by keyword (e.g. 'virtual assistant', 'transcription'), pay range in Naira, and whether an assessment is required. The jobs page opens with the filters applied; the worker can also adjust them on screen. Use when they ask things like 'show VA jobs paying between 12 and 20 thousand'.",
+      parameters: z.object({
+        keyword: z.string().optional().describe("skill or title keyword"),
+        minPay: z.number().optional().describe("minimum pay in Naira"),
+        maxPay: z.number().optional().describe("maximum pay in Naira"),
+        requiresAssessment: z.boolean().optional().describe("true = only jobs with an assessment, false = only without"),
+      }),
+      execute: async ({ keyword, minPay, maxPay, requiresAssessment }) => {
+        const filtered = store.listJobs().filter((j) => {
+          const kw = keyword?.trim().toLowerCase();
+          if (kw && !j.title.toLowerCase().includes(kw) && !j.skill.toLowerCase().includes(kw)) return false;
+          if (minPay !== undefined && j.pay < minPay) return false;
+          if (maxPay !== undefined && j.pay > maxPay) return false;
+          if (requiresAssessment !== undefined && j.requiresAssessment !== requiresAssessment) return false;
+          return true;
+        });
+        return {
+          ok: true,
+          filters: { keyword, minPay, maxPay, requiresAssessment },
+          matches: filtered.map((j) => ({ id: j.id, title: j.title, pay: j.pay, skill: j.skill })),
+        };
+      },
     }),
 
     create_account: tool({
@@ -26,6 +60,27 @@ export function makeTools(account: Account) {
       }),
       execute: async ({ name, role }) => {
         const acc = store.createAccount(name, role);
+        return { ok: true, userId: acc.id, name: acc.name, role: acc.role };
+      },
+    }),
+
+    switch_account: tool({
+      description:
+        "Switch the user to another account on this device, by name or role (e.g. 'my employer account', 'ClearVoice Media'). Confirm which account before switching. The browser is signed in to it automatically.",
+      parameters: z.object({ query: z.string().describe("account name, or 'worker'/'employer' if unambiguous") }),
+      execute: async ({ query }) => {
+        const q = query.trim().toLowerCase();
+        // Voice switching covers only passwordless demo identities — real
+        // credentialed accounts require typing a password on the login page.
+        const all = store.listAccounts().filter((a) => !a.passwordHash);
+        const matches = all.filter(
+          (a) => a.name.toLowerCase().includes(q) || a.role === q || a.id === query.trim(),
+        );
+        if (matches.length === 0)
+          return { ok: false, message: "No account matches that.", accounts: all.map((a) => `${a.name} (${a.role})`) };
+        if (matches.length > 1)
+          return { ok: false, message: "More than one account matches — ask which one.", accounts: matches.map((a) => `${a.name} (${a.role})`) };
+        const acc = matches[0];
         return { ok: true, userId: acc.id, name: acc.name, role: acc.role };
       },
     }),
@@ -47,6 +102,119 @@ export function makeTools(account: Account) {
         if (!Number.isFinite(pay) || pay <= 0) return { ok: false, message: "Pay must be a positive amount in Naira." };
         const job = store.postJob({ title, skill, pay, employer: account.name, requiresAssessment, assessmentQuestion });
         return { ok: true, jobId: job.id, title: job.title, pay: job.pay, requiresAssessment: job.requiresAssessment };
+      },
+    }),
+
+    review_applicants: tool({
+      description:
+        "For employers: list the applications on the employer's own posted gigs, with worker name and status. 'assessed' with skillVerified true means they passed the assessment and are ready to hire.",
+      parameters: z.object({}),
+      execute: async () => {
+        if (account.role !== "employer") return { ok: false, message: "Only employer accounts can review applicants." };
+        const jobs = store.listJobs().filter((j) => j.employer.toLowerCase() === account.name.toLowerCase());
+        const w = store.getWorker();
+        const applications = store
+          .getApplications()
+          .filter((a) => jobs.some((j) => j.id === a.jobId))
+          .map((a) => ({
+            jobId: a.jobId,
+            gig: store.getJob(a.jobId)?.title,
+            worker: w.name,
+            status: a.status,
+            skillVerified: a.verified,
+            assessmentResult: a.assessmentResult,
+            workerSkills: w.skills ?? [],
+            workerBio: w.bio ?? "",
+          }));
+        return { ok: true, applications };
+      },
+    }),
+
+    hire_worker: tool({
+      description:
+        "For employers: hire the worker on one of the employer's own gigs, normally after they passed the assessment. Confirm with the employer aloud before calling.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        if (account.role !== "employer") return { ok: false, message: "Only employer accounts can hire." };
+        const job = store.getJob(jobId);
+        if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
+          return { ok: false, message: "That gig is not one of this employer's postings." };
+        }
+        const app = store.hireWorker(jobId);
+        if (!app) return { ok: false, message: "No application on that gig yet." };
+        return { ok: true, status: app.status, gig: job.title };
+      },
+    }),
+
+    reject_worker: tool({
+      description:
+        "For employers: decline the applicant on one of their gigs. Confirm with the employer aloud before calling. The worker is notified kindly by Aide.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        if (account.role !== "employer") return { ok: false, message: "Only employer accounts can reject applicants." };
+        const job = store.getJob(jobId);
+        if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
+          return { ok: false, message: "That gig is not one of this employer's postings." };
+        }
+        const app = store.rejectWorker(jobId);
+        if (!app) return { ok: false, message: "No application on that gig yet." };
+        store.publishEvent({
+          type: "notify",
+          message: `An update on ${job.title} from ${job.employer}: they went with another applicant this time. Your assessment result stays on your profile — I can find you more jobs whenever you're ready.`,
+        });
+        return { ok: true, status: app.status, gig: job.title };
+      },
+    }),
+
+    scan_external_jobs: tool({
+      description:
+        "Search the open web (Remotive's public listings of real remote jobs) for openings matching the worker's skills and resume. Results are saved under External jobs on the jobs page. Read back the titles and companies found.",
+      parameters: z.object({}),
+      execute: async () => {
+        const { searchExternalJobs } = await import("../external");
+        const w = store.getWorker();
+        const verifiedSkills = store
+          .getApplications()
+          .filter((a) => a.verified)
+          .map((a) => store.getJob(a.jobId)?.skill)
+          .filter((s): s is string => !!s);
+        const skills = [...new Set([...(w.skills ?? []), ...verifiedSkills])];
+        const jobs = await searchExternalJobs(skills);
+        store.setExternalJobs(jobs);
+        return {
+          ok: true,
+          matchedSkills: skills,
+          found: jobs.map((j) => ({ id: j.id, title: j.title, company: j.company })),
+        };
+      },
+    }),
+
+    track_external_job: tool({
+      description:
+        "Record that the worker is applying to one of the external listings found by scan_external_jobs, so their submission is tracked on the jobs page. You cannot fill the external site's form for them — tell them the listing is open on their jobs page and you've tracked the application.",
+      parameters: z.object({ externalJobId: z.string() }),
+      execute: async ({ externalJobId }) => {
+        const app = store.trackExternalJob(externalJobId);
+        if (!app) return { ok: false, message: "No external listing with that id — scan for jobs first." };
+        return { ok: true, tracked: { title: app.title, company: app.company, url: app.url } };
+      },
+    }),
+
+    mark_gig_paid: tool({
+      description:
+        "For employers: mark one of their gigs as paid. This ONLY succeeds when a confirmed Monnify payment actually covers the gig's pay — if it fails, tell the employer to send the money from the payout desk first. Never claim a gig is paid unless this returns ok.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        if (account.role !== "employer") return { ok: false, message: "Only employer accounts can mark gigs paid." };
+        const job = store.getJob(jobId);
+        if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
+          return { ok: false, message: "That gig is not one of this employer's postings." };
+        }
+        const coverage = await store.verifyPaymentCoverage(jobId);
+        if (!coverage.ok) return { ok: false, message: coverage.message };
+        const app = store.payWorker(jobId);
+        if (!app) return { ok: false, message: "No application on that gig yet." };
+        return { ok: true, status: app.status, gig: job.title, message: "Confirmed payment covers this gig; it is now marked paid." };
       },
     }),
 
@@ -127,7 +295,7 @@ export function makeTools(account: Account) {
           return { ok: true, ...store.gradeMcqAssessment(account.id, jobId, answers) };
         }
         if (answer !== undefined) {
-          return { ok: true, ...store.gradeOralAssessment(account.id, jobId, answer) };
+          return { ok: true, ...(await store.gradeOralAssessment(account.id, jobId, answer)) };
         }
         return { ok: false, message: "Either 'answer' or 'answers' must be provided." };
       },

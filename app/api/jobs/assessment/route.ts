@@ -26,7 +26,7 @@ export async function POST(req: Request) {
 
   // Oral Grading
   if (answer !== undefined && typeof answer === "string") {
-    return Response.json({ ok: true, ...gradeOralAssessment(userId, job.id, answer) });
+    return Response.json({ ok: true, ...(await gradeOralAssessment(userId, job.id, answer)) });
   }
 
   // Start Assessment (fetch questions/prompt and record start timestamp)

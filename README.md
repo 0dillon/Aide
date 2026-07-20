@@ -26,17 +26,33 @@ Everything below is backed by **real Monnify sandbox calls**, not mocks (see
   locks blind users out. In sandbox the transfer returns `PENDING_AUTHORIZATION` because
   third-party disbursement is gated behind full business KYC (see PROOF.md), so Aide
   narrates this honestly rather than faking success.
+- **Live payment announcements.** A Monnify webhook (signature-checked, re-verified
+  server-side) plus a polling fallback feed a server-sent-events stream — Aide announces
+  confirmed money out loud the moment it lands, unprompted.
+- **"Paid" means paid.** An employer can only mark a gig paid when confirmed inbound
+  Monnify money actually covers it — the button obeys the same rule as the model: never
+  state a payment that didn't verifiably happen.
+- **Two roles, all by voice.** Workers and employers sign up (form or just "sign me up"),
+  employers post gigs — title, pay, assessment, time limit — entirely by voice, review
+  applicants, hire, and mark paid. Assessments are oral (LLM rubric-graded, fair and
+  unbiased, never reveals answers) or MCQ (read aloud, graded server-side, answer key
+  never leaves the server), optionally time-bound with spoken countdown alerts and
+  auto-close.
 
 ## Demo flow
 
-Three worker screens plus the employer desk:
+Five worker/employer screens plus the payout desk:
 
 - **`/`** — talk to Aide. The orb glows while Aide speaks; the session transcript runs beside it.
-- **`/jobs`** — browse gigs, apply, and take the spoken assessment when the recruiter requires one.
-- **`/payments`** — confirmed balance, your real NUBAN for receiving pay, and two-step
-  voice-confirmed withdrawals.
-- **`/employer`** — where an employer pays the worker. It surfaces the worker's **real**
-  reserved NUBAN and hands off to the Monnify simulator, so inbound money is real, not mocked.
+- **`/jobs`** — workers browse and apply, take spoken or MCQ assessments (timed, if the
+  recruiter set a limit); employers manage postings, applicants, hiring, and payouts.
+- **`/payments`** — confirmed balance, your real NUBAN for receiving pay, transaction
+  history, and two-step voice-confirmed withdrawals.
+- **`/profile`** — role-aware profile: completed jobs, verified skills, bio; switchable
+  demo accounts.
+- **`/signup`** — join as worker or employer, on screen or entirely by voice.
+- **`/employer`** — the payout desk. It surfaces the worker's **real** reserved NUBAN and
+  hands off to the Monnify simulator, so inbound money is real, not mocked.
 
 The UI is built for low-vision, blind, and colorblind users: Atkinson Hyperlegible type
 (designed by the Braille Institute), an Okabe-Ito colorblind-safe palette at WCAG-AAA

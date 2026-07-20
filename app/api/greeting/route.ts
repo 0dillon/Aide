@@ -1,4 +1,4 @@
-import { getAccount, getApplications, getBalance, getJob, getWorker, listJobs } from "@/lib/store";
+import { getAccount, getApplications, getBalance, getJob, getWallet, listJobs } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -35,22 +35,23 @@ export async function GET(req: Request) {
 
   // Never let Monnify delay Aide's first words: if the balance isn't back in
   // 2.5s, greet without the money line (usually served from cache anyway).
+  // This also lazily provisions the user's own wallet on their first visit.
   let balance: number | null = null;
   try {
     balance = await Promise.race<number | null>([
-      getBalance().then((b) => b.balance),
+      getBalance(acc.id).then((b) => b.balance),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
     ]);
   } catch {
     /* greet without the money line */
   }
 
-  const worker = getWorker();
   const apps = getApplications();
   const awaitingAssessment = apps.filter((a) => a.status === "applied" && !a.verified && getJob(a.jobId)?.requiresAssessment);
 
-  if (worker.pendingWithdrawal) {
-    parts.push(`You have a withdrawal of ${worker.pendingWithdrawal.amount} naira waiting for your spoken confirmation.`);
+  const wallet = getWallet(acc.id);
+  if (wallet.pendingWithdrawal) {
+    parts.push(`You have a withdrawal of ${wallet.pendingWithdrawal.amount} naira waiting for your spoken confirmation.`);
   }
   if (balance !== null && balance > 0) {
     parts.push(`You have ${balance} naira in your account, ready to withdraw.`);
@@ -60,6 +61,13 @@ export async function GET(req: Request) {
       awaitingAssessment.length === 1
         ? `One of your job applications is waiting for a short spoken assessment — say start my assessment when you're ready.`
         : `${awaitingAssessment.length} of your job applications are waiting for short spoken assessments — say start my assessment when you're ready.`,
+    );
+  } else if (acc.skills.length === 0 && !acc.bio) {
+    // Voice-native onboarding: a worker with an empty profile is offered a
+    // spoken setup. Their "yes" goes to the agent, which collects skills and
+    // bio conversationally (see the onboarding rules in the system prompt).
+    parts.push(
+      "Your profile is still empty. Would you like to set it up now? I can write down your skills and a short bio just from talking with you, and use them to match you with the right jobs. Just say yes and we'll do it together.",
     );
   } else if (apps.length === 0) {
     parts.push(`There are ${listJobs().length} jobs available right now — ask me to find you work.`);

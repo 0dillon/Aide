@@ -1,21 +1,24 @@
-import { getBalance, getWorker } from "@/lib/store";
+import { getAccount, getBalance, getWallet } from "@/lib/store";
+import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-// Everything the payments page needs in one call. getBalance() lazily mints
-// the real Monnify reserved account on first use, then sums confirmed pay.
-export async function GET() {
+// Everything the payments page needs in one call, for the signed-in user's
+// OWN wallet. getBalance() lazily provisions the real Monnify reserved
+// account on first use, then returns confirmed inbound minus withdrawals.
+export async function GET(req: Request) {
   try {
-    const { balance } = await getBalance();
-    const w = getWorker();
+    const acc = getAccount(userIdFrom(req));
+    const { balance, account, bankName } = await getBalance(acc.id);
+    const wallet = getWallet(acc.id);
     return Response.json({
       balance,
-      name: w.name,
-      accountNumber: w.accountNumber,
-      bankName: w.bankName,
-      payoutAccount: w.payoutAccount,
-      payoutAccountName: w.payoutAccountName,
-      pendingWithdrawal: w.pendingWithdrawal ? { amount: w.pendingWithdrawal.amount } : null,
+      name: acc.name,
+      accountNumber: account,
+      bankName,
+      payoutAccount: wallet.payoutAccount,
+      payoutAccountName: wallet.payoutAccountName,
+      pendingWithdrawal: wallet.pendingWithdrawal ? { amount: wallet.pendingWithdrawal.amount } : null,
     });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 500 });

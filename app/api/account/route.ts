@@ -1,4 +1,4 @@
-import { createAccount, findAccountByEmail, getAccount, publicAccount, type Role } from "@/lib/store";
+import { createAccount, findAccountByEmail, getAccount, provisionWalletInBackground, publicAccount, type Role } from "@/lib/store";
 import { hashPassword } from "@/lib/auth";
 import { sessionCookie, userCookie, clearUserCookie, userIdFrom } from "@/lib/session";
 
@@ -31,6 +31,9 @@ export async function POST(req: Request) {
       return Response.json({ error: "An account with that email already exists. Try logging in." }, { status: 409 });
     }
     const acc = createAccount(name, role as Role, email.trim(), hashPassword(password));
+    // Per Monnify's guidance, the wallet (dedicated reserved NUBAN) is minted
+    // at signup — in the background, so signing up never waits on the API.
+    provisionWalletInBackground(acc.id);
     const headers = new Headers();
     headers.append("Set-Cookie", sessionCookie(acc.id));
     headers.append("Set-Cookie", clearUserCookie());
@@ -38,5 +41,6 @@ export async function POST(req: Request) {
   }
 
   const acc = createAccount(name, role as Role, email?.trim() || undefined);
+  provisionWalletInBackground(acc.id);
   return Response.json(publicAccount(acc), { headers: { "Set-Cookie": userCookie(acc.id) } });
 }

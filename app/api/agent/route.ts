@@ -82,7 +82,7 @@ export async function POST(req: Request) {
           (t) => (t.toolName === "create_account" || t.toolName === "switch_account") && t.result?.userId,
         )?.result?.userId;
 
-        emit(controller, { t: "done", navigateTo, newUserId, state: snapshot() });
+        emit(controller, { t: "done", navigateTo, newUserId, state: snapshot(account.id) });
       } catch (e) {
         emit(controller, { t: "error", message: (e as Error).message });
       }

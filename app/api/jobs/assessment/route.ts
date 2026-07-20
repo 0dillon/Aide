@@ -1,4 +1,4 @@
-import { assessmentPromptFor, cancelAssessment, getApplications, getJob, gradeOralAssessment, gradeMcqAssessment, recordAttempt } from "@/lib/store";
+import { cancelAssessment, getJob, gradeOralAssessment, gradeMcqAssessment, startAssessment } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -27,11 +27,6 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, cancelled: true });
   }
 
-  const app = getApplications().find((a) => a.jobId === job.id);
-  if (app?.status === "cancelled") {
-    return Response.json({ error: "You cancelled this assessment earlier, so this job is no longer open to you." }, { status: 403 });
-  }
-
   // MCQ Grading
   if (answers !== undefined && Array.isArray(answers)) {
     return Response.json({ ok: true, ...gradeMcqAssessment(userId, job.id, answers) });
@@ -42,28 +37,11 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, ...(await gradeOralAssessment(userId, job.id, answer)) });
   }
 
-  // Start Assessment (fetch questions/prompt and record start timestamp)
-  const startTime = recordAttempt(userId, job.id);
-  const type = job.assessmentType || "oral";
-  const timeLimit = job.timeLimit; // in seconds
-
-  if (type === "mcq") {
-    const sanitizedQuestions = job.mcqQuestions?.map(({ question, options }) => ({ question, options })) || [];
-    return Response.json({
-      ok: true,
-      assessmentType: "mcq",
-      questions: sanitizedQuestions,
-      timeLimit,
-      startedAt: startTime,
-    });
-  } else {
-    const prompt = assessmentPromptFor(job);
-    return Response.json({
-      ok: true,
-      assessmentType: "oral",
-      prompt,
-      timeLimit,
-      startedAt: startTime,
-    });
+  // Start Assessment — shared with the voice agent's start_assessment tool,
+  // so the cancel lockout and attempt bookkeeping live in one place.
+  const started = startAssessment(userId, job.id);
+  if (!started.ok) {
+    return Response.json({ error: started.message }, { status: 403 });
   }
+  return Response.json(started);
 }

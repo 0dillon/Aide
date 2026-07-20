@@ -1,4 +1,4 @@
-import { getAccount, getApplications, getBalance, getJob, getWorker, listJobs, publicAccount, updateProfile } from "@/lib/store";
+import { getAccount, getApplications, getBalance, getJob, listJobs, publicAccount, updateProfile } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -25,10 +25,12 @@ export async function GET(req: Request) {
   // Worker profile — balance is best-effort so the page still renders when
   // Monnify is unreachable.
   let balance: number | null = null;
+  let wallet: { account?: string; bankName?: string } = {};
   try {
-    balance = (await getBalance()).balance;
+    const b = await getBalance(acc.id);
+    balance = b.balance;
+    wallet = b;
   } catch {}
-  const w = getWorker();
   const applications = getApplications().map((a) => ({ ...a, job: getJob(a.jobId) }));
   const verified = applications.filter((a) => a.verified);
   return Response.json({
@@ -37,11 +39,11 @@ export async function GET(req: Request) {
     applications,
     completedJobs: verified.length,
     verifiedSkills: [...new Set(verified.map((a) => a.job?.skill).filter(Boolean))],
-    skills: w.skills || [],
-    bio: w.bio || "",
+    skills: acc.skills,
+    bio: acc.bio,
     balance,
-    accountNumber: w.accountNumber,
-    bankName: w.bankName,
+    accountNumber: wallet.account,
+    bankName: wallet.bankName,
   });
 }
 

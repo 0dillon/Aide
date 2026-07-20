@@ -45,12 +45,16 @@ export type ReservedAccount = {
   accounts: { bankCode: string; bankName: string; accountNumber: string }[];
 };
 
-// Create a dedicated virtual NUBAN for one user — their earnings account.
+// Create a dedicated virtual NUBAN for one user — their wallet. Monnify
+// requires a BVN or NIN on every reserved account (compliance); at least one
+// must be provided.
 export function createReservedAccount(input: {
   accountReference: string;
   accountName: string;
   customerName: string;
   customerEmail: string;
+  bvn?: string;
+  nin?: string;
 }): Promise<ReservedAccount> {
   return authed<ReservedAccount>("/api/v2/bank-transfer/reserved-accounts", "POST", {
     accountReference: input.accountReference,
@@ -59,6 +63,8 @@ export function createReservedAccount(input: {
     contractCode: env.contractCode,
     customerName: input.customerName,
     customerEmail: input.customerEmail,
+    bvn: input.bvn ?? (input.nin ? undefined : env.kycBvn),
+    nin: input.nin,
     getAllAvailableBanks: true,
   });
 }

@@ -60,6 +60,9 @@ export function makeTools(account: Account) {
       }),
       execute: async ({ name, role }) => {
         const acc = store.createAccount(name, role);
+        // Every new account gets its own Monnify wallet, minted in the
+        // background so voice signup never waits on the payment rail.
+        store.provisionWalletInBackground(acc.id);
         return { ok: true, userId: acc.id, name: acc.name, role: acc.role };
       },
     }),
@@ -158,7 +161,7 @@ export function makeTools(account: Account) {
         }
         const app = store.rejectWorker(jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
-        store.publishEvent({
+        store.publishEvent(store.getWorker().id, {
           type: "notify",
           message: `An update on ${job.title} from ${job.employer}: they went with another applicant this time. Your assessment result stays on your profile — I can find you more jobs whenever you're ready.`,
         });
@@ -172,13 +175,12 @@ export function makeTools(account: Account) {
       parameters: z.object({}),
       execute: async () => {
         const { searchExternalJobs } = await import("../external");
-        const w = store.getWorker();
         const verifiedSkills = store
           .getApplications()
           .filter((a) => a.verified)
           .map((a) => store.getJob(a.jobId)?.skill)
           .filter((s): s is string => !!s);
-        const skills = [...new Set([...(w.skills ?? []), ...verifiedSkills])];
+        const skills = [...new Set([...(account.skills ?? []), ...verifiedSkills])];
         const jobs = await searchExternalJobs(skills);
         store.setExternalJobs(jobs);
         return {
@@ -249,35 +251,7 @@ export function makeTools(account: Account) {
     start_assessment: tool({
       description: "Start the assessment for a job. Returns the assessment type ('oral' or 'mcq'), oral prompt or MCQ questions, the time limit in seconds (if any), and start timestamp. You should announce the assessment details, including the time limit, to the user.",
       parameters: z.object({ jobId: z.string() }),
-      execute: async ({ jobId }) => {
-        const job = store.getJob(jobId);
-        if (!job) return { ok: false, message: "No job with that id." };
-        if (store.getApplications().find((a) => a.jobId === jobId)?.status === "cancelled") {
-          return { ok: false, message: "The worker cancelled this assessment earlier and cannot retake it or apply to this job again." };
-        }
-        const startTime = store.recordAttempt(account.id, jobId);
-        const type = job.assessmentType || "oral";
-        if (type === "mcq") {
-          const sanitizedQuestions = job.mcqQuestions?.map(({ question, options }) => ({ question, options })) || [];
-          return {
-            ok: true,
-            jobId: job.id,
-            assessmentType: "mcq",
-            questions: sanitizedQuestions,
-            timeLimit: job.timeLimit,
-            startedAt: startTime,
-          };
-        } else {
-          return {
-            ok: true,
-            jobId: job.id,
-            assessmentType: "oral",
-            prompt: store.assessmentPromptFor(job),
-            timeLimit: job.timeLimit,
-            startedAt: startTime,
-          };
-        }
-      },
+      execute: async ({ jobId }) => store.startAssessment(account.id, jobId),
     }),
 
     cancel_assessment: tool({
@@ -323,33 +297,33 @@ export function makeTools(account: Account) {
     }),
 
     get_balance: tool({
-      description: "Get the worker's confirmed balance (real, from Monnify) in Naira.",
+      description: "Get this user's own wallet balance (real, from Monnify) in Naira, with their dedicated account number for receiving money.",
       parameters: z.object({}),
       execute: async () => {
-        const { balance, account: acctNo } = await store.getBalance();
-        return { balance, currency: "NGN", account: acctNo };
+        const { balance, account: acctNo, bankName } = await store.getBalance(account.id);
+        return { balance, currency: "NGN", account: acctNo, bank: bankName };
       },
     }),
 
     register_payout_account: tool({
       description:
-        "Validate and save the worker's bank account for withdrawals. Read the returned account name back to the user for spoken confirmation before withdrawing.",
+        "Validate and save this user's bank account for withdrawals. Read the returned account name back to the user for spoken confirmation before withdrawing.",
       parameters: z.object({ accountNumber: z.string(), bankCode: z.string().describe("3-digit NIP bank code, e.g. 035 Wema, 058 GTBank") }),
-      execute: async ({ accountNumber, bankCode }) => registerPayout(accountNumber, bankCode),
+      execute: async ({ accountNumber, bankCode }) => registerPayout(account.id, accountNumber, bankCode),
     }),
 
     prepare_withdrawal: tool({
       description:
-        "Step 1 of 2 for a withdrawal. Arms a withdrawal of `amount` Naira to the saved payout account and returns a one-word confirmation phrase. Do NOT move money here. After calling, read the amount and account NAME back to the user, then tell them to say the returned `phrase` word aloud to confirm.",
+        "Step 1 of 2 for a withdrawal from this user's own wallet. Arms a withdrawal of `amount` Naira to the saved payout account and returns a one-word confirmation phrase. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read the amount and account NAME back to the user, then tell them to say the returned `phrase` word aloud to confirm.",
       parameters: z.object({ amount: z.number().describe("amount in Naira to withdraw") }),
-      execute: async ({ amount }) => store.armWithdrawal(amount),
+      execute: async ({ amount }) => store.armWithdrawal(account.id, amount),
     }),
 
     confirm_withdrawal: tool({
       description:
         "Step 2 of 2 for a withdrawal. Pass exactly what the user said when asked to confirm. Only call this after the user has spoken; never invent the phrase. If it matches the armed confirmation word, the real bank transfer runs and the status is returned.",
       parameters: z.object({ spokenPhrase: z.string().describe("the exact words the user just spoke to confirm") }),
-      execute: async ({ spokenPhrase }) => confirmWithdrawal(spokenPhrase),
+      execute: async ({ spokenPhrase }) => confirmWithdrawal(account.id, spokenPhrase),
     }),
 
     update_profile: tool({
@@ -363,7 +337,8 @@ export function makeTools(account: Account) {
       }),
       execute: async (input) => {
         const result = store.updateProfile(account.id, input);
-        return { ok: true, name: result.worker.name, skills: result.worker.skills, bio: result.worker.bio };
+        const acc = result.account;
+        return { ok: true, name: acc?.name, skills: acc?.skills, bio: acc?.bio };
       },
     }),
   };

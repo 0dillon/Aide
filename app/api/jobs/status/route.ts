@@ -1,4 +1,4 @@
-import { getAccount, getJob, hireWorker, payWorker, publishEvent, rejectWorker, verifyPaymentCoverage } from "@/lib/store";
+import { getAccount, getJob, getWorker, hireWorker, payWorker, publishEvent, rejectWorker, verifyPaymentCoverage } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     app = hireWorker(jobId);
     if (app) {
       // Aide tells the worker out loud, the moment the decision is made.
-      publishEvent({
+      publishEvent(getWorker().id, {
         type: "notify",
         message: `Great news from ${job.employer}: you have been hired for ${job.title}. Say "help me with my job" and I will guide you through the task.`,
       });
@@ -32,7 +32,7 @@ export async function POST(req: Request) {
   } else if (action === "reject") {
     app = rejectWorker(jobId);
     if (app) {
-      publishEvent({
+      publishEvent(getWorker().id, {
         type: "notify",
         message: `An update on ${job.title} from ${job.employer}: they went with another applicant this time. Your assessment result stays on your profile — I can find you more jobs whenever you're ready.`,
       });

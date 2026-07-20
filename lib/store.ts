@@ -28,7 +28,9 @@ export type Job = {
 export type Application = {
   id: string;
   jobId: string;
-  status: "applied" | "assessed" | "hired" | "rejected" | "paid";
+  // "cancelled" = the worker abandoned the assessment; the job is permanently
+  // locked for them — no retake, no re-application.
+  status: "applied" | "assessed" | "hired" | "rejected" | "paid" | "cancelled";
   verified: boolean;
   // Human-readable assessment outcome for the employer, e.g. "MCQ: 2 of 2 (100%)".
   assessmentResult?: string;
@@ -385,6 +387,19 @@ export function checkTimeLimit(userId: string, jobId: string, timeLimit?: number
 
 export function clearAttempt(userId: string, jobId: string) {
   attempts.delete(`${userId}-${jobId}`);
+}
+
+// The worker walked away from an assessment. This is deliberately one-way:
+// the application flips to "cancelled" and stays there, so the job can never
+// be re-applied to or the assessment retaken.
+export function cancelAssessment(userId: string, jobId: string): Application | undefined {
+  clearAttempt(userId, jobId);
+  const app = worker.applications.find((a) => a.jobId === jobId);
+  if (app && app.status === "applied" && !app.verified) {
+    app.status = "cancelled";
+    app.assessmentResult = "Assessment cancelled by worker";
+  }
+  return app;
 }
 
 // How long the worker has left on a running, time-limited assessment — lets

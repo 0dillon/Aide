@@ -43,13 +43,10 @@ function MicMeter() {
   }, []);
 
   if (failed) return <p className="text-sm font-bold text-[var(--alert)]">Mic check: could not open the microphone.</p>;
-  if (level === null) return <p className="text-sm text-[var(--ink-soft)]">Mic check: opening microphone…</p>;
+  if (level === null) return null;
   return (
     <div className="w-full max-w-sm">
-      <p className="text-sm font-bold text-[var(--ink-soft)]">
-        Mic level {level === 0 ? "— silent (wrong input device?)" : ""}
-      </p>
-      <div className="mt-1 h-3 w-full rounded-full border-2 border-[var(--line)] bg-white" aria-hidden="true">
+      <div className="h-3 w-full rounded-full border-2 border-[var(--line)] bg-white" aria-hidden="true">
         <div
           className="h-full rounded-full bg-[var(--accent)]"
           style={{ width: `${level}%`, transition: "width 80ms linear" }}
@@ -123,10 +120,7 @@ export default function AidePage() {
         )}
         {error && <p className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
 
-        <div className="flex w-full max-w-sm flex-col items-center gap-2">
-          <p className="text-sm text-[var(--ink-soft)]">Hearing status: {micStatus}</p>
-          <MicMeter />
-        </div>
+        <MicMeter />
 
         <TypeFallback onSend={send} disabled={thinking} />
       </section>

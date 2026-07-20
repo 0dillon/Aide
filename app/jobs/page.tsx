@@ -109,6 +109,21 @@ function JobsPageInner() {
     loadExternal().catch(() => {});
   }, [load, loadExternal]);
 
+  // Aide's voice flow lands here with ?assessment=<jobId> after the agent's
+  // start_assessment tool ran — open that job's assessment UI automatically.
+  const autoStartedRef = useRef(false);
+  const assessmentParam = searchParams.get("assessment");
+  useEffect(() => {
+    if (!assessmentParam || autoStartedRef.current || jobs.length === 0 || assessment) return;
+    const job = jobs.find((j) => j.id === assessmentParam);
+    const app = apps.find((a) => a.jobId === assessmentParam);
+    if (job && job.requiresAssessment && app && !app.verified && app.status === "applied") {
+      autoStartedRef.current = true;
+      startAssessment(job);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assessmentParam, jobs, apps]);
+
   const scanExternal = async () => {
     setScanning(true);
     setError(null);
@@ -278,6 +293,9 @@ function JobsPageInner() {
         intro += `You have a time limit of ${timeStr}. `;
       }
 
+      intro +=
+        "Before we begin: you can cancel at any time by saying, cancel assessment — but be warned, cancelling permanently locks this job, and you will not be able to apply to it again. ";
+
       if (data.assessmentType === "mcq") {
         const qCount = data.questions?.length || 0;
         intro += `This is a multiple choice assessment with ${qCount} question${qCount === 1 ? "" : "s"}. `;
@@ -293,7 +311,21 @@ function JobsPageInner() {
         );
       } else {
         intro += `The prompt is: ${data.prompt}. `;
-        beginCapture((t) => setAnswer((prev) => (prev ? prev + " " : "") + t));
+        beginCapture((t) => {
+          // "cancel assessment" is a command, not part of the answer. First
+          // time warns, saying it again confirms the permanent lockout.
+          if (/\bcancel (the |this |my )?assessment\b/i.test(t)) {
+            if (pendingCancelRef.current) cancelAssessmentForGood(job);
+            else {
+              pendingCancelRef.current = true;
+              speak(
+                "Are you sure? Cancelling permanently locks this job — you will never be able to apply to it again. Say cancel assessment once more to confirm, or just continue answering.",
+              );
+            }
+            return;
+          }
+          setAnswer((prev) => (prev ? prev + " " : "") + t);
+        });
         speak(intro + "Just speak your answer, then press submit.");
       }
     } catch (e) {
@@ -305,7 +337,30 @@ function JobsPageInner() {
 
   const closeAssessment = () => {
     endCapture();
+    pendingCancelRef.current = false;
     setAssessment(null);
+  };
+
+  // Cancelling is one-way: the server locks the job for this worker forever.
+  const pendingCancelRef = useRef(false);
+  const cancelAssessmentForGood = async (job: Job) => {
+    await fetch("/api/jobs/assessment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId: job.id, action: "cancel" }),
+    }).catch(() => {});
+    closeAssessment();
+    setResult({ verified: false, message: `Assessment cancelled. ${job.title} is now permanently closed to you.` });
+    speak(`Your assessment is cancelled. As I warned, ${job.title} is now permanently closed to you — but I can find you other jobs any time.`);
+    await load();
+  };
+
+  const onCancelClick = () => {
+    if (!assessment) return;
+    const sure = window.confirm(
+      "Cancel this assessment? This is permanent — you will NEVER be able to apply to this job again.",
+    );
+    if (sure) cancelAssessmentForGood(assessment.job);
   };
 
   const readMcqQuestionAloud = (qIdx: number) => {
@@ -666,8 +721,8 @@ function JobsPageInner() {
             >
               {submitting ? "Submitting…" : "Submit assessment"}
             </button>
-            <button onClick={closeAssessment} className="min-h-12 rounded-lg border-2 border-[var(--ink)] px-6 py-3 text-lg font-bold">
-              Cancel
+            <button onClick={onCancelClick} className="min-h-12 rounded-lg border-2 border-[var(--alert)] px-6 py-3 text-lg font-bold text-[var(--alert)]">
+              Cancel assessment (locks this job)
             </button>
           </div>
         </section>
@@ -760,10 +815,10 @@ function JobsPageInner() {
                           : { borderColor: "var(--ink-soft)", color: "var(--ink-soft)" }
                       }
                     >
-                      {app.verified ? "✓ Skill verified" : `Applied — ${app.status}`}
+                      {app.verified ? "✓ Skill verified" : app.status === "cancelled" ? "Locked — assessment cancelled" : `Applied — ${app.status}`}
                     </span>
                   )}
-                  {app && !app.verified && job.requiresAssessment && (
+                  {app && !app.verified && app.status !== "cancelled" && job.requiresAssessment && (
                     <button
                       onClick={() => startAssessment(job)}
                       disabled={busyJob === job.id}

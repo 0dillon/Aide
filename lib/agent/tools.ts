@@ -233,7 +233,10 @@ export function makeTools(account: Account) {
         const job = store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
         const app = store.apply(jobId);
-        return { ok: true, applicationId: app.id, title: job.title, needsAssessment: job.requiresAssessment };
+        if (app.status === "cancelled") {
+          return { ok: false, message: "The worker cancelled the assessment for this job earlier, so they can no longer apply to it." };
+        }
+        return { ok: true, jobId: job.id, applicationId: app.id, title: job.title, needsAssessment: job.requiresAssessment };
       },
     }),
 
@@ -249,12 +252,16 @@ export function makeTools(account: Account) {
       execute: async ({ jobId }) => {
         const job = store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
+        if (store.getApplications().find((a) => a.jobId === jobId)?.status === "cancelled") {
+          return { ok: false, message: "The worker cancelled this assessment earlier and cannot retake it or apply to this job again." };
+        }
         const startTime = store.recordAttempt(account.id, jobId);
         const type = job.assessmentType || "oral";
         if (type === "mcq") {
           const sanitizedQuestions = job.mcqQuestions?.map(({ question, options }) => ({ question, options })) || [];
           return {
             ok: true,
+            jobId: job.id,
             assessmentType: "mcq",
             questions: sanitizedQuestions,
             timeLimit: job.timeLimit,
@@ -263,12 +270,26 @@ export function makeTools(account: Account) {
         } else {
           return {
             ok: true,
+            jobId: job.id,
             assessmentType: "oral",
             prompt: store.assessmentPromptFor(job),
             timeLimit: job.timeLimit,
             startedAt: startTime,
           };
         }
+      },
+    }),
+
+    cancel_assessment: tool({
+      description:
+        "Cancel the worker's running assessment for a job. IRREVERSIBLE: a cancelled assessment locks them out of ever applying to that job again. Before calling, warn them of exactly that and get an explicit spoken yes. This is one of the few actions allowed during assessment lockdown.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        const job = store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        const app = store.cancelAssessment(account.id, jobId);
+        if (!app) return { ok: false, message: "No application on that job to cancel." };
+        return { ok: true, gig: job.title, message: "Assessment cancelled. The worker can no longer apply to this job." };
       },
     }),
 

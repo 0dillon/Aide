@@ -47,7 +47,7 @@ export async function GET(req: Request) {
 
   const worker = getWorker();
   const apps = getApplications();
-  const awaitingAssessment = apps.filter((a) => !a.verified && getJob(a.jobId)?.requiresAssessment);
+  const awaitingAssessment = apps.filter((a) => a.status === "applied" && !a.verified && getJob(a.jobId)?.requiresAssessment);
 
   if (worker.pendingWithdrawal) {
     parts.push(`You have a withdrawal of ${worker.pendingWithdrawal.amount} naira waiting for your spoken confirmation.`);

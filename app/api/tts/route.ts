@@ -16,9 +16,21 @@ const CONNECT_TIMEOUT_MS = 8000;
 const audioCache = new Map<string, Buffer>();
 const CACHE_MAX = 100;
 
+// GET lets the client point an <audio> element straight at the URL, so
+// playback starts while synthesis is still streaming — much lower latency
+// than POST + blob(), which waits for the whole file.
+export async function GET(req: Request) {
+  const text = new URL(req.url).searchParams.get("text");
+  return synthesize(text);
+}
+
 export async function POST(req: Request) {
+  const { text } = (await req.json().catch(() => ({}))) as { text?: string };
+  return synthesize(text);
+}
+
+async function synthesize(text: string | null | undefined) {
   try {
-    const { text } = (await req.json().catch(() => ({}))) as { text?: string };
     if (!text) {
       return Response.json({ error: "text is required" }, { status: 400 });
     }

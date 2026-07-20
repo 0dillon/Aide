@@ -85,6 +85,9 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingSpeechRef = useRef<string | null>(null);
   const speechEndedAtRef = useRef(0);
+  // What Aide is currently saying — used to avoid self-triggering the
+  // "stop talking" voice interrupt when Aide itself utters the phrase.
+  const currentSpeechTextRef = useRef("");
   const messagesRef = useRef<Msg[]>([]);
   messagesRef.current = messages;
 
@@ -113,7 +116,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   // Create a FRESH recognizer each time — Chrome instances can wedge after
   // abort, and a new one is the reliable way back to a working mic.
   const startRecognition = useCallback(() => {
-    if (!activeRef.current || speakingRef.current || typeof window === "undefined") return;
+    if (!activeRef.current || typeof window === "undefined") return;
     const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!Ctor) return;
 
@@ -157,10 +160,17 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         if (e.results[i].isFinal) finalText += t;
         else interimText += t;
       }
-      setInterim(interimText);
       const clean = finalText.trim();
-      // Ignore anything heard while Aide talks (or its immediate echo tail).
-      if (!clean || speakingRef.current || Date.now() - speechEndedAtRef.current < 400) return;
+      // While Aide talks, the mic stays open ONLY to hear "aide stop talking".
+      // Everything else heard mid-speech (usually Aide's own echo) is dropped.
+      if (speakingRef.current) {
+        const heard = (clean + " " + interimText).toLowerCase();
+        const selfEcho = currentSpeechTextRef.current.toLowerCase().includes("stop talking");
+        if (!selfEcho && /\b(stop talking|aide stop|be quiet)\b/.test(heard)) interruptRef.current();
+        return;
+      }
+      setInterim(interimText);
+      if (!clean || Date.now() - speechEndedAtRef.current < 400) return;
       rapidEndsRef.current = 0;
       setInterim("");
       if (captureRef.current) captureRef.current(clean);
@@ -172,7 +182,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       const aliveMs = Date.now() - lastStartRef.current;
       console.info(`Aide mic: recognizer ended after ${aliveMs}ms`);
       setListening(false);
-      if (!activeRef.current || speakingRef.current) return;
+      if (!activeRef.current) return;
       // Instant deaths mean something is wrong (usually no internet — Chrome's
       // recognizer needs it). Back off instead of hot-looping.
       if (aliveMs < 1000) {
@@ -216,15 +226,31 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   }, [setListening]);
   startRecognitionRef.current = startRecognition;
 
-  const speak = useCallback(
+  // Streamed replies are spoken sentence by sentence: each finished utterance
+  // pulls the next queued sentence, and only when the queue runs dry does the
+  // mic get the floor back.
+  const speechQueueRef = useRef<string[]>([]);
+  const speakNowRef = useRef<(t: string) => void>(() => {});
+  const finishOrNext = useCallback(() => {
+    const queued = speechQueueRef.current.shift();
+    if (queued !== undefined) {
+      speakNowRef.current(queued);
+      return;
+    }
+    speakingRef.current = false;
+    setSpeaking(false);
+    speechEndedAtRef.current = Date.now();
+    if (activeRef.current) startRecognition();
+  }, [startRecognition]);
+
+  const speakNow = useCallback(
     async (text: string) => {
       if (typeof window === "undefined") return;
-      // Pause the mic while Aide talks so it doesn't hear itself.
+      // The mic STAYS OPEN while Aide talks — onresult drops everything heard
+      // mid-speech except the "aide stop talking" interrupt phrase.
       speakingRef.current = true;
+      currentSpeechTextRef.current = text;
       setSpeaking(true);
-      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-      recRef.current?.abort();
-      setListening(false);
 
       // Stop any running neural audio
       if (currentAudioRef.current) {
@@ -234,62 +260,55 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         currentAudioRef.current = null;
       }
 
-      // Try server-side neural TTS
+      // Server-side neural TTS, streamed: the <audio> element points straight
+      // at the GET endpoint, so playback begins while synthesis is still in
+      // flight instead of after the whole MP3 has downloaded.
       try {
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        });
+        const audio = new Audio(`/api/tts?text=${encodeURIComponent(text)}`);
+        currentAudioRef.current = audio;
 
-        if (res.ok) {
-          const blob = await res.blob();
-          const audioUrl = URL.createObjectURL(blob);
-          const audio = new Audio(audioUrl);
-          currentAudioRef.current = audio;
+        let audioStarted = false;
+        const watchdog = setTimeout(() => {
+          if (!audioStarted && currentAudioRef.current === audio) {
+            console.warn("Neural audio never started — falling back to the browser voice.");
+            stopAudio();
+            speakWithBrowserVoice();
+          }
+        }, 3000);
 
-          let audioStarted = false;
-          let watchdog = setTimeout(() => {
-            if (!audioStarted && currentAudioRef.current === audio) {
-              console.warn("Neural audio playback watchdog triggered. Resuming mic.");
-              resumeAudio();
-            }
-          }, 3000);
+        const stopAudio = () => {
+          clearTimeout(watchdog);
+          audio.onended = null;
+          audio.onerror = null;
+          audio.pause();
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+        };
+        const resumeAudio = () => {
+          stopAudio();
+          finishOrNext();
+        };
 
-          const resumeAudio = () => {
-            clearTimeout(watchdog);
-            audio.onended = null;
-            audio.onerror = null;
-            audio.pause();
-            try {
-              URL.revokeObjectURL(audioUrl);
-            } catch {}
-            if (currentAudioRef.current === audio) {
-              currentAudioRef.current = null;
-              speakingRef.current = false;
-              setSpeaking(false);
-              speechEndedAtRef.current = Date.now();
-              if (activeRef.current) startRecognition();
-            }
-          };
+        audio.onplay = () => {
+          audioStarted = true;
+        };
+        audio.onended = resumeAudio;
+        audio.onerror = () => {
+          console.warn("Neural audio playback failed — falling back to the browser voice.");
+          const wasCurrent = currentAudioRef.current === audio;
+          stopAudio();
+          if (wasCurrent) speakWithBrowserVoice();
+        };
 
-          audio.onplay = () => {
-            audioStarted = true;
-          };
-          audio.onended = resumeAudio;
-          audio.onerror = (e) => {
-            console.error("Neural audio playback failed:", e);
-            resumeAudio();
-          };
-
-          await audio.play();
-          return;
-        }
+        await audio.play();
+        return;
       } catch (err) {
         console.warn("Neural TTS failed, falling back to browser-native:", err);
+        speakWithBrowserVoice();
+        return;
       }
 
       // Browser-Native SpeechSynthesis Fallback
+      function speakWithBrowserVoice() {
       if (!window.speechSynthesis) return;
 
       const u = new SpeechSynthesisUtterance(text);
@@ -317,10 +336,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         if (runawayWatchdog) clearTimeout(runawayWatchdog);
         if (currentUtterRef.current !== u) return; // superseded
         currentUtterRef.current = null;
-        speakingRef.current = false;
-        setSpeaking(false);
-        speechEndedAtRef.current = Date.now();
-        if (activeRef.current) startRecognition();
+        finishOrNext();
       };
 
       u.onstart = () => {
@@ -352,8 +368,27 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       }, 10000 + text.length * 90);
 
       window.speechSynthesis.speak(u);
+      }
     },
-    [setListening, startRecognition],
+    [setListening, startRecognition, finishOrNext],
+  );
+  speakNowRef.current = speakNow;
+
+  // Public speak: interrupts whatever is queued and says this instead.
+  const speak = useCallback(
+    (text: string) => {
+      speechQueueRef.current = [];
+      speakNow(text);
+    },
+    [speakNow],
+  );
+  // Queue a sentence behind whatever is already being said.
+  const queueSpeak = useCallback(
+    (text: string) => {
+      if (speakingRef.current) speechQueueRef.current.push(text);
+      else speakNow(text);
+    },
+    [speakNow],
   );
 
   const send = useCallback(
@@ -369,14 +404,89 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages: next }),
         });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || !data?.reply) throw new Error(data?.error || `Aide had a problem (status ${res.status}).`);
-        setMessages([...next, { role: "assistant", content: data.reply }]);
-        speak(data.reply);
-        if (data.navigateTo) {
-          router.push(data.navigateTo);
+        if (!res.ok || !res.body) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || `Aide had a problem (status ${res.status}).`);
+        }
+
+        // NDJSON stream: grow the transcript live and speak each completed
+        // sentence while the rest of the reply is still generating.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let lineBuf = "";
+        let full = "";
+        let unspoken = "";
+        const doneBox: { ev: { navigateTo?: string; newUserId?: string } | null } = { ev: null };
+
+        const flushSentences = (all: boolean) => {
+          if (all) {
+            if (unspoken.trim()) queueSpeak(unspoken.trim());
+            unspoken = "";
+            return;
+          }
+          let m: RegExpExecArray | null;
+          let searchFrom = 0;
+          while ((m = /[.!?…]\s+/.exec(unspoken.slice(searchFrom)))) {
+            const end = searchFrom + m.index + 1;
+            const sentence = unspoken.slice(0, end).trim();
+            // Not a real sentence end: list markers like "1." or a fragment
+            // with no words yet — keep accumulating past this dot instead.
+            if (/(^|\s)\d+[.!?…]$/.test(sentence) || sentence.replace(/[^a-zA-Z]/g, "").length < 3) {
+              searchFrom = end + m[0].length - 1;
+              continue;
+            }
+            unspoken = unspoken.slice(searchFrom + m.index + m[0].length);
+            searchFrom = 0;
+            queueSpeak(sentence);
+          }
+        };
+
+        const handleLine = (line: string) => {
+          if (!line.trim()) return;
+          const ev = JSON.parse(line);
+          if (ev.t === "delta") {
+            full += ev.text;
+            unspoken += ev.text;
+            setMessages([...next, { role: "assistant", content: full }]);
+            flushSentences(false);
+          } else if (ev.t === "done") {
+            doneBox.ev = ev;
+          } else if (ev.t === "error") {
+            throw new Error(ev.message || "Aide had a problem.");
+          }
+        };
+
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (value) {
+            lineBuf += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = lineBuf.indexOf("\n")) !== -1) {
+              handleLine(lineBuf.slice(0, nl));
+              lineBuf = lineBuf.slice(nl + 1);
+            }
+          }
+          if (done) break;
+        }
+        handleLine(lineBuf);
+        flushSentences(true);
+        if (!full.trim()) throw new Error("Aide had a problem — no reply arrived.");
+
+        if (doneBox.ev?.newUserId) {
+          // A streaming response can't set cookies after it starts — sign the
+          // browser in now, and start a fresh transcript for the new identity.
+          await fetch("/api/account/switch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: doneBox.ev.newUserId }),
+          }).catch(() => {});
+          setMessages([{ role: "assistant", content: full }]);
+        }
+        const navigateTo = doneBox.ev?.navigateTo;
+        if (navigateTo) {
+          router.push(navigateTo);
           // Follow Aide's words: scroll to the section it is talking about.
-          const hash = String(data.navigateTo).split("#")[1];
+          const hash = navigateTo.split("#")[1];
           if (hash) {
             setTimeout(() => document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" }), 700);
           }
@@ -390,7 +500,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         thinkingRef.current = false;
       }
     },
-    [router, speak],
+    [router, speak, queueSpeak],
   );
   const sendRef = useRef(send);
   sendRef.current = send;
@@ -416,7 +526,8 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         .then((res) => res.json())
         .catch(() => null)
         .then((data) => {
-          const greeting = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
+          const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
+          const greeting = `${base} By the way, you can interrupt me any time by saying: aide, stop talking.`;
           setMessages((m) => [...m, { role: "assistant", content: greeting }]);
           speak(greeting);
         });
@@ -476,8 +587,9 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     return () => es.close();
   }, [speak]);
 
-  // Tap Aide while it talks to cut it off and be heard immediately.
+  // Tap Aide while it talks — or say "aide stop talking" — to cut it off.
   const interrupt = useCallback(() => {
+    speechQueueRef.current = [];
     if (currentAudioRef.current) {
       currentAudioRef.current.onended = null;
       currentAudioRef.current.onerror = null;
@@ -491,6 +603,33 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     speechEndedAtRef.current = Date.now();
     if (activeRef.current) startRecognition();
   }, [startRecognition]);
+  const interruptRef = useRef(interrupt);
+  interruptRef.current = interrupt;
+
+  // Only the visible tab gets a voice and ears. Without this, every open tab
+  // runs its own recognizer and speaks its own replies — two Aides talking
+  // over each other the moment a second tab is open.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        activeRef.current = false;
+        setActive(false);
+        if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+        try {
+          recRef.current?.abort();
+        } catch {}
+        setListening(false);
+        interruptRef.current();
+      } else {
+        activeRef.current = true;
+        setActive(true);
+        startRecognitionRef.current();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    if (document.hidden) onVisibility();
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [setListening]);
 
   const beginCapture = useCallback((onText: (t: string) => void) => {
     captureRef.current = onText;

@@ -1,139 +1,272 @@
 # Aide
 
-**Voice-native work & pay platform for blind and visually impaired workers in Nigeria.**
-Built for APIConf × Monnify. A worker talks, Aide does everything else: finds jobs, runs
-a spoken skill assessment, opens a real bank account, confirms incoming pay, and reads the
-balance back aloud. No screen required.
+**A voice-native work-and-pay platform for blind and visually impaired workers in Nigeria.**
+Built for APIConf × Monnify.
 
-The whole product is one idea: **a blind user can't read an SMS OTP or a screen, so the
-entire loop (earn, verify, get paid) has to work by voice with spoken confirmation
-replacing every visual step.**
+A worker talks; Aide does the rest — finds jobs, runs a spoken skill assessment, opens a
+real bank account, confirms incoming pay, and reads the balance back aloud. No screen
+required.
 
----
-
-## What works today
-
-Everything below is backed by **real Monnify sandbox calls**, not mocks (see
-[`PROOF.md`](PROOF.md) for the live verification log):
-
-- **Earnings account.** Each worker gets a real reserved NUBAN minted via Monnify.
-- **Employer pays in.** Inbound payment lands, Aide re-fetches it server-side and only
-  then announces the confirmed amount.
-- **Balance.** The real sum of confirmed (`PAID`) inbound transactions, spoken aloud.
-- **Withdrawal behind a spoken confirmation.** A real disbursement call, gated behind two
-  steps: Aide reads back the amount and the destination account *name*, then the user must
-  say a specific one-time word aloud before any money moves. To be clear about what this
-  is: it is a **consent gate, not a second factor.** Anyone within earshot hears the word,
-  so it cannot prove identity — nothing spoken aloud can. What it does prevent is a
-  withdrawal happening by accident, by mishearing, or on the model's initiative, and it
-  guarantees the user hears where the money is going before agreeing. Identity is defended
-  separately: money can only ever leave to a destination registered earlier and verified
-  with the bank, newly added destinations are held before they can receive anything, and
-  single withdrawals are capped. In sandbox the transfer returns `PENDING_AUTHORIZATION` because
-  third-party disbursement is gated behind full business KYC (see PROOF.md), so Aide
-  narrates this honestly rather than faking success.
-- **Live payment announcements.** A Monnify webhook (signature-checked, re-verified
-  server-side) plus a polling fallback write into Convex, and every listening browser
-  gets the event reactively — Aide announces confirmed money out loud the moment it
-  lands, unprompted. This is deliberately not an in-process subscriber list: on
-  serverless the webhook and the browser hit different instances, and an in-memory
-  design drops the alert silently.
-- **"Paid" means paid.** An employer can only mark a gig paid when confirmed inbound
-  Monnify money actually covers it — the button obeys the same rule as the model: never
-  state a payment that didn't verifiably happen.
-- **Two roles, all by voice.** Workers and employers sign up (form or just "sign me up"),
-  employers post gigs — title, pay, assessment, time limit — entirely by voice, review
-  applicants, hire, and mark paid. Assessments are oral (LLM rubric-graded, fair and
-  unbiased, never reveals answers) or MCQ (read aloud, graded server-side, answer key
-  never leaves the server), optionally time-bound with spoken countdown alerts and
-  auto-close.
-
-## Demo flow
-
-Five worker/employer screens plus the payout desk:
-
-- **`/`** — talk to Aide. The orb glows while Aide speaks; the session transcript runs beside it.
-- **`/jobs`** — workers browse and apply, take spoken or MCQ assessments (timed, if the
-  recruiter set a limit); employers manage postings, applicants, hiring, and payouts.
-- **`/payments`** — confirmed balance, your real NUBAN for receiving pay, transaction
-  history, and two-step voice-confirmed withdrawals.
-- **`/profile`** — role-aware profile: completed jobs, verified skills, bio; switchable
-  demo accounts.
-- **`/signup`** — join as worker or employer, on screen or entirely by voice.
-- **`/employer`** — the payout desk. It surfaces the worker's **real** reserved NUBAN and
-  hands off to the Monnify simulator, so inbound money is real, not mocked.
-
-The UI is built for low-vision, blind, and colorblind users: Atkinson Hyperlegible type
-(designed by the Braille Institute), an Okabe-Ito colorblind-safe palette at WCAG-AAA
-contrast, 18px+ text, large touch targets, visible focus rings, reduced-motion support,
-and no status conveyed by color alone.
-
-## The voice loop
-
-1. Worker taps once and speaks (Web Speech API: STT in, TTS out).
-2. The transcript goes to `/api/agent`, which runs the model (DeepSeek) with a tool set.
-3. The model never invents a number. Every money fact comes from a Monnify tool result.
-4. The reply is spoken back, and a live side-panel mirrors state for sighted judges.
+[**Live demo →** aide-ng.vercel.app](https://aide-ng.vercel.app) · Open in Chrome and just talk.
 
 ---
 
-## Live
+## 1. Project Overview
 
-**<https://aide-ng.vercel.app>** — open it in Chrome and just talk.
+Aide is a two-sided gig marketplace — workers find and complete work, employers post and
+pay for it — rebuilt so that **every step of the earn-verify-get-paid loop happens by
+voice**, with a spoken confirmation replacing every visual step a blind user cannot read.
 
-## Quick start
+The core value proposition is simple: a visually impaired worker in Nigeria can go from
+"I need work" to money confirmed in their own bank account **without ever reading a
+screen, an OTP, or a form**. They speak to Aide; Aide navigates, fills forms, runs
+assessments, and narrates real financial state back to them.
 
-Three terminals. Convex holds the data, so it runs alongside the app.
+What makes that credible rather than a demo trick is that **the money is real**. Aide never
+invents a number. Every balance, every account detail, and every transfer is a live
+Monnify API call, re-verified server-side before Aide is allowed to say it out loud.
+
+**Highlights**
+
+- **Real earnings accounts** — each user is issued a dedicated virtual NUBAN via Monnify.
+- **Confirmed-only balances** — the balance is the summed total of `PAID` inbound
+  transactions, never an optimistic guess.
+- **Voice-confirmed withdrawals** — a real disbursement, gated behind a spoken security
+  phrase (the accessible replacement for an SMS OTP).
+- **Live, unprompted payment alerts** — a signature-checked Monnify webhook drives a
+  reactive announcement the moment money lands.
+- **100% voice-controllable** — account creation, profile setup, gig posting (including
+  multiple-choice assessments), applications, assessments, hiring, and withdrawals all
+  work entirely by voice.
+
+**Built with:** Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 ·
+Convex · Vercel AI SDK + DeepSeek · **Monnify API** · Web Speech API · edge-tts.
+
+---
+
+## 2. Powered by Monnify
+
+Monnify is the entire financial backbone of Aide. It is not a mocked or simulated payment
+layer — the app talks to the live Monnify sandbox on every money-related action, and the
+`lib/monnify.ts` client wraps a focused set of endpoints across four Monnify product
+areas. The guiding rule throughout: **Aide may only speak a financial fact that a Monnify
+call returned this turn.**
+
+### Authentication
+
+| Endpoint | Method | Role in Aide |
+|---|---|---|
+| `/api/v1/auth/login` | `POST` | Exchanges `Basic base64(apiKey:secretKey)` for a bearer token. Tokens are cached in-process and refreshed 60s before their ~1h expiry, so the hot path never pays an auth round-trip. |
+
+### Reserved Accounts (dedicated virtual NUBANs) — *how every user receives money*
+
+Each Aide account is backed by its own Monnify **Reserved Account**, keyed by a
+deterministic `accountReference` (`aide-<accountId>`) so the same real NUBAN re-attaches
+across restarts and serverless instances.
+
+| Endpoint | Method | Role in Aide |
+|---|---|---|
+| `/api/v2/bank-transfer/reserved-accounts` | `POST` | Mints a dedicated NUBAN for a new user (with BVN/NIN for compliance, `getAllAvailableBanks: true`). Provisioned in the background at signup so account creation never blocks on the payment rail. |
+| `/api/v2/bank-transfer/reserved-accounts/{accountReference}` | `GET` | Idempotency guard — fetched first on every provision so a returning/retried account reuses its existing NUBAN instead of erroring on a duplicate reference. |
+| `/api/v1/bank-transfer/reserved-accounts/transactions?accountReference=…` | `GET` | **The source of truth for balance.** The confirmed balance is `sum(amount where paymentStatus == "PAID")`, minus the app's own withdrawal ledger. This is what Aide reads aloud. |
+
+### Disbursements — *how workers withdraw*
+
+| Endpoint | Method | Role in Aide |
+|---|---|---|
+| `/api/v1/disbursements/account/validate?accountNumber=…&bankCode=…` | `GET` | **Name Enquiry.** Powers two things: the inline "✓ Account found: NAME" validation under the withdrawal fields (OPay-style), and the read-back of the real destination name before any withdrawal is armed. |
+| `/api/v2/disbursements/single` | `POST` | The actual transfer, executed only after the spoken confirmation passes. Sourced from the merchant wallet. |
+| `/api/v2/disbursements/single/validate-otp` | `POST` | OTP-authorization step, wired for the production disbursement flow. |
+| `/api/v1/disbursements/wallet-balance?walletId=…` | `GET` | Merchant wallet balance check (used by the standalone proof scripts). |
+
+### Transaction Verification & Webhooks — *how live payments are trusted*
+
+| Mechanism | Role in Aide |
+|---|---|
+| `/api/v2/transactions/{transactionReference}` (`GET`) | Every inbound payment is **re-fetched server-side** and confirmed `PAID` before Aide announces it. A webhook payload alone is never trusted about money. |
+| Webhook receiver (`/api/payments/webhook`) | Verifies a **SHA-512 HMAC** of the *raw* request body against the `monnify-signature` header (`isValidWebhook`), then resolves the paid wallet from the reference and writes an event into Convex. |
+
+**Why the webhook writes to Convex instead of an in-process listener:** on serverless, the
+webhook and the user's browser hit different instances. An in-memory subscriber list would
+drop the "money just landed" alert silently. Writing the event to Convex makes it reactive
+across instances — every listening browser receives it and Aide announces it, unprompted.
+A polling fallback covers local development without a public tunnel.
+
+### The withdrawal flow, end to end
+
+1. **Arm** — `prepare_withdrawal` checks the amount against the real available balance,
+   runs **Name Enquiry** on the destination (new account, saved beneficiary, or dynamic
+   entry), and stores a pending withdrawal in Convex.
+2. **Confirm** — the worker speaks their personal **security phrase** (hashed, never
+   echoed — the accessible replacement for an SMS OTP). The check-and-clear is a single
+   atomic Convex mutation, so no double-spend is possible.
+3. **Disburse** — `/api/v2/disbursements/single` runs, and the result is recorded in the
+   withdrawal ledger that keeps the balance honest.
+
+> **On sandbox honesty:** third-party disbursement in sandbox returns
+> `PENDING_AUTHORIZATION` because live payout is gated behind full business KYC. Aide
+> narrates this state truthfully rather than faking a success — see [`PROOF.md`](PROOF.md)
+> for the mock-free verification log.
+
+---
+
+## 3. The Problem & Solution
+
+### The barrier
+
+Nigeria has a large population of blind and visually impaired people, and the digital
+work-and-pay economy is almost entirely inaccessible to them by design:
+
+- **OTPs are unreadable.** The single most common security primitive — the SMS one-time
+  code — assumes you can read a screen. For a blind user it is a hard wall in the middle
+  of every payment.
+- **Forms assume sight.** Signing up, posting a gig, entering a bank account, taking a
+  skills test — all of it is built around visually scanning fields and tapping targets.
+- **Screen readers retrofit; they don't reimagine.** Bolting a screen reader onto a
+  sighted-first UI produces a slow, brittle experience, especially around money where a
+  misread number has real cost.
+
+The net effect: a capable worker is locked out of earning not by lack of skill, but by the
+interface.
+
+### The solution
+
+Aide inverts the default. Instead of a visual app with voice bolted on, it is a **voice
+application** where the screen is the optional mirror:
+
+- **The whole loop is spoken.** Finding work, proving a skill, receiving pay, and
+  withdrawing all happen through conversation with Aide.
+- **Spoken confirmation replaces the OTP.** Withdrawals are gated behind a personal spoken
+  security phrase and a mandatory read-back of the amount and destination name — accessible
+  by construction, and never dependent on reading anything.
+- **Aide is honest about money.** The agent is architecturally forbidden from stating a
+  balance or payment it didn't get from a Monnify tool call this turn, so the voice you
+  trust is never guessing.
+- **The visual layer is genuinely accessible too.** Atkinson Hyperlegible type (designed by
+  the Braille Institute), an Okabe-Ito colorblind-safe palette at WCAG-AAA contrast, 18px+
+  text, large touch targets, visible focus rings, reduced-motion support, and no status
+  ever conveyed by color alone.
+
+---
+
+## 4. User Journey & Onboarding Flow
+
+A new worker never touches a form unless they want to. The entire journey below is
+voice-driven; the screen simply mirrors it.
+
+1. **Arrival & greeting.** The user opens Aide and taps once (browsers require one
+   interaction before audio). Aide greets them with their real state and, for a new empty
+   profile, offers to set it up.
+
+2. **Voice sign-up.** *"Sign me up."* Aide asks for a name and whether they're joining as a
+   worker or an employer, confirms both back, and creates the account. A dedicated Monnify
+   NUBAN is minted in the background immediately.
+
+3. **Voice onboarding.** Aide offers to build the profile conversationally — asking what
+   work they can do (skills) and about their experience (turned into a short bio), reading
+   it all back before saving. This is what matches them to jobs.
+
+4. **Finding & applying for work.** *"Find me transcription jobs paying over twelve
+   thousand."* Aide filters the board, reads the matches aloud, and applies on request —
+   noting whether a spoken assessment is required.
+
+5. **Proving the skill.** If a gig requires it, Aide runs the assessment — an **oral**
+   question (LLM rubric-graded, fair, never reveals answers) or **multiple-choice** (read
+   aloud, graded server-side, answer key never leaves the server), optionally time-bound
+   with spoken countdown alerts. The worker can cancel by voice with a clear warning.
+
+6. **Getting hired & paid in.** The employer hires (by voice), and Aide announces it out
+   loud. The employer pays into the worker's **real NUBAN**; the moment the confirmed
+   payment lands, Aide announces the amount — unprompted, via the Monnify webhook → Convex
+   reactive path.
+
+7. **Withdrawing funds.** *"Send ten thousand naira to my GTBank account."* Aide validates
+   the destination by Name Enquiry, reads the verified account name and amount back, and
+   asks for the spoken security phrase. On confirmation, the real disbursement runs, and
+   Aide offers to save the destination as a beneficiary for next time.
+
+At every step, the user can tap anywhere or press any key to cut Aide off mid-sentence and
+speak.
+
+---
+
+## 5. Local Setup & Installation
+
+Aide runs across three processes: the Next.js app, the Convex data layer (kept running
+alongside), and a local neural-voice dependency.
+
+### Prerequisites
+
+- **Node.js 20+** and **npm**
+- **Python 3** with `edge-tts` (for the local neural voice)
+- A **Monnify sandbox** account ([app.monnify.com](https://app.monnify.com) → Developer)
+- A **DeepSeek** API key ([platform.deepseek.com](https://platform.deepseek.com)) — powers the agent
+- **Google Chrome** — the only browser with `SpeechRecognition`; Aide detects others and falls back to a text box
+
+### Install & run
 
 ```bash
-# 1. install
+# 1. Install dependencies
 npm install
-pip install -r requirements.txt      # edge-tts, for the local neural voice
+pip install -r requirements.txt        # edge-tts, for the local neural voice
 
-# 2. secrets
-cp .env.example .env                 # fill from app.monnify.com/developer + platform.deepseek.com
+# 2. Configure secrets
+cp .env.example .env                    # fill from the Monnify Developer page + DeepSeek
 
-# 3. data layer — leave this running (writes NEXT_PUBLIC_CONVEX_URL to .env.local)
+# 3. Start the data layer — leave this running.
+#    It provisions your own Convex deployment and writes NEXT_PUBLIC_CONVEX_URL
+#    (and CONVEX_DEPLOYMENT) into .env.local automatically.
 npx convex dev
 
-# 4. the app
-npm run dev                          # http://localhost:3000
+# 4. Start the app (in a second terminal)
+npm run dev                             # → http://localhost:3000
 ```
 
-The first `npx convex dev` asks you to log in and create a project; take the defaults.
-It gives you **your own** deployment — the demo worker and employer accounts seed
-themselves on first request, so there is no database to import.
+The first `npx convex dev` asks you to log in and create a project — take the defaults. The
+demo worker and employer accounts seed themselves on first request, so there is nothing to
+import.
 
-Open in **Chrome** (Firefox and iOS Safari have no `SpeechRecognition`; Aide detects that
-and says so aloud, then falls back to the text box). Allow the microphone and try:
+Open **http://localhost:3000 in Chrome**, allow the microphone, and try:
 
-> "Find me transcription jobs" · "Apply me to the first one" · "What's my balance?"
+> *"Find me transcription jobs"* · *"Apply me to the first one"* · *"What's my balance?"*
 
-Tap anywhere or press any key to cut Aide off mid-sentence.
+### Environment variables
 
-**Troubleshooting**
+| Variable | Required | Purpose |
+|---|:---:|---|
+| `MONNIFY_API_KEY` | ✅ | Monnify Developer → API Keys |
+| `MONNIFY_SECRET_KEY` | ✅ | Monnify Developer → API Keys (also signs/verifies webhooks) |
+| `MONNIFY_CONTRACT_CODE` | ✅ | Monnify Developer → Contract Code |
+| `MONNIFY_BASE_URL` | | Defaults to `https://sandbox.monnify.com` |
+| `MONNIFY_WALLET_ACCOUNT_NUMBER` | | Source account for disbursements |
+| `MONNIFY_KYC_BVN` | | BVN attached to reserved accounts (defaults to the sandbox test BVN) |
+| `DEEPSEEK_API_KEY` | ✅ | Powers the Aide agent (tool-calling) |
+| `AIDE_MODEL` | | Agent model override (default `deepseek-chat`) |
+| `EDGE_TTS_VOICE` | | Neural voice (default `en-NG-EzinneNeural`) |
+| `PYTHON_BIN` | | Override if `python3`/`python` isn't auto-detected |
+| `NEXT_PUBLIC_CONVEX_URL` | auto | Written by `npx convex dev` into `.env.local` — do not set by hand |
 
-| Symptom | Cause |
-|---|---|
-| `NEXT_PUBLIC_CONVEX_URL is not set` | `npx convex dev` isn't running, or `npm run dev` started before it wrote `.env.local`. Restart `npm run dev`. |
-| Aide never speaks | Browsers block audio until you interact — click the page once. Aide replays what it was going to say. |
-| Aide can't hear you | Check the OS mic isn't muted (Windows: `mmsys.cpl` → Recording). Aide announces this aloud after a few seconds of silence. |
-| No neural voice locally | `pip install -r requirements.txt`, and set `PYTHON_BIN` if `python` isn't on PATH. Aide falls back to the browser voice. |
+### Verifying the Monnify loop (optional)
 
----
-
-## The money-loop proof (run before trusting the app)
-
-The proof scripts verify the Monnify loop independently of any UI:
+Standalone scripts verify the payment loop independently of the UI:
 
 ```bash
-npm run proof      # auth, reserved account, validate, attempt disbursement
+npm run proof      # auth → reserved account → name enquiry → attempt disbursement
 npm run webhook    # signed inbound webhook receiver (pair with: npx localtunnel --port 4000)
 npm run balance    # wallet balance check
 ```
 
-`npm run proof` prints `SUCCESS` (no OTP, withdrawals work) or `PENDING_AUTHORIZATION`
-(2FA required, the documented sandbox state). Results are captured in [`PROOF.md`](PROOF.md).
+`npm run proof` prints `SUCCESS` or the documented `PENDING_AUTHORIZATION` sandbox state;
+results are captured in [`PROOF.md`](PROOF.md).
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `NEXT_PUBLIC_CONVEX_URL is not set` | `npx convex dev` isn't running, or `npm run dev` started before it wrote `.env.local`. Restart `npm run dev`. |
+| Aide never speaks | Browsers block audio until you interact — click the page once. Aide replays what it was going to say. |
+| Aide can't hear you | Check the OS mic isn't muted. Aide announces this aloud after a few seconds of silence. Use Chrome. |
+| No neural voice locally | `pip install -r requirements.txt`, and set `PYTHON_BIN` if `python` isn't on PATH. Aide falls back to the browser voice. |
 
 ---
 
@@ -141,30 +274,18 @@ npm run balance    # wallet balance check
 
 | Path | What it holds |
 |---|---|
-| `app/` | Next.js App Router UI: voice page, `/about`, API routes |
-| `app/aide/` | The voice engine (mic, TTS queue, interrupts) and the React provider around it |
+| `app/` | Next.js App Router UI: voice page, screens, API routes |
+| `app/aide/` | The voice engine (mic, TTS queue, interrupts) and its React provider |
 | `app/employer/` | Employer "payout desk" showing the worker's real NUBAN to pay into |
-| `api/speak.py` | Neural TTS as a native Python serverless function (production) |
 | `convex/` | Schema and server functions — accounts, wallets, applications, events |
 | `lib/monnify.ts` | Monnify client: auth, reserved accounts, verify, transfer, webhook HMAC |
 | `lib/agent/` | Aide's system prompt and tool definitions |
 | `lib/store/` | Domain layer over Convex: accounts, payments, applications, jobs, events |
-| `scripts/probe-*.mjs` | Playwright probes: mobile layout audit, speech-timing trace |
-| `src/*.ts` | Standalone CLI proof scripts (thin shims re-export `lib/`) |
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how a spoken command flows through the system,
-the design rules that keep the agent honest about money, and where to extend it.
-
----
+| `src/*.ts` | Standalone CLI proof scripts |
 
 ## Documentation
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): system design, data flow, extension points
-- [`POSITIONING.md`](POSITIONING.md): competitive landscape + how Aide wins
-- [`PROOF.md`](PROOF.md): mock-free Monnify sandbox verification log
-- [`PRD.md`](PRD.md): product requirements
-
-## Tech
-
-Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · Convex · Vercel AI SDK +
-DeepSeek · Monnify API · Web Speech API · edge-tts (Python) · Playwright · Vercel.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — system design, data flow, extension points
+- [`PROOF.md`](PROOF.md) — mock-free Monnify sandbox verification log
+- [`POSITIONING.md`](POSITIONING.md) — competitive landscape
+- [`PRD.md`](PRD.md) — product requirements

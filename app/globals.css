@@ -40,6 +40,43 @@ html, body {
 
 * { box-sizing: border-box; }
 
+/*
+  Interactive cursor feedback, applied application-wide so every control signals
+  what it does on hover — a pointer for anything clickable, a not-allowed cursor
+  for anything disabled. Component-level Tailwind utilities (cursor-pointer /
+  cursor-not-allowed) layer on top of this for the primary actions; this base
+  rule is the safety net that guarantees nothing is left as a default arrow.
+*/
+button,
+summary,
+label[for],
+select,
+a[href],
+[role="button"],
+[role="link"],
+[role="tab"],
+[role="switch"] {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+textarea:disabled,
+input:disabled,
+[aria-disabled="true"],
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+input:not([type]),
+textarea {
+  cursor: text;
+}
+
 /* Visible keyboard focus on both light and dark surfaces */
 :focus-visible {
   outline: 3px solid var(--focus);

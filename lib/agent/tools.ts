@@ -431,5 +431,46 @@ export function makeTools(account: Account) {
         return { ok: true, name: acc?.name, skills: acc?.skills, bio: acc?.bio };
       },
     }),
+
+    read_messages: tool({
+      description:
+        "Read aloud the onboarding message thread for a hired gig. This channel opens only after the worker is hired. For a worker it is their onboarding conversation with the employer; for an employer it is the channel with the worker they hired. Pass the jobId — for workers, the jobId of a hired application (get_applications); for employers, a gig they hired on (review_applicants). Read each message with who sent it.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        const job = await store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        if (account.role === "employer" && job.employer.toLowerCase() !== account.name.toLowerCase()) {
+          return { ok: false, message: "That gig is not one of this employer's postings." };
+        }
+        if (!(await store.messagingUnlocked(jobId))) {
+          return { ok: false, message: "Messaging opens once the worker is hired for this gig." };
+        }
+        const messages = (await store.listMessages(jobId)).map((m) => ({ from: m.from, author: m.authorName, text: m.text }));
+        return { ok: true, gig: job.title, messages };
+      },
+    }),
+
+    send_message: tool({
+      description:
+        "Send a message in a hired gig's onboarding channel, entirely by voice. Employers use this to send onboarding directives, credentials, or next steps to the worker they hired; workers use it to reply or ask a question. Only works after the worker is hired. Always read the exact message back and get a spoken yes before sending — especially anything sensitive like credentials or account details. Pass the jobId (get_applications for workers, review_applicants for employers) and the message text as dictated.",
+      parameters: z.object({
+        jobId: z.string(),
+        text: z.string().describe("the message to send, exactly as the user dictated it"),
+      }),
+      execute: async ({ jobId, text }) => {
+        const job = await store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        if (account.role === "employer" && job.employer.toLowerCase() !== account.name.toLowerCase()) {
+          return { ok: false, message: "That gig is not one of this employer's postings." };
+        }
+        if (!(await store.messagingUnlocked(jobId))) {
+          return { ok: false, message: "Messaging opens once the worker is hired for this gig." };
+        }
+        if (!text.trim()) return { ok: false, message: "There is no message to send." };
+        const from = account.role === "employer" ? ("employer" as const) : ("worker" as const);
+        await store.sendMessage(jobId, from, account.name, text);
+        return { ok: true, gig: job.title, sent: text.trim() };
+      },
+    }),
   };
 }

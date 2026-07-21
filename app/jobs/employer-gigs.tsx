@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAide } from "../aide";
+import { MessageThread } from "./message-thread";
 import { PostGigModal } from "./post-gig-modal";
 import { naira, type Application, type Job } from "./types";
 
@@ -60,7 +61,7 @@ export function EmployerGigs({
             assessments, hire workers, and initiate payouts.
           </p>
         </div>
-        <button onClick={() => setShowPost(true)} className="min-h-12 rounded-lg bg-[var(--accent)] px-6 py-3 text-lg font-bold text-white">
+        <button onClick={() => setShowPost(true)} className="min-h-12 cursor-pointer rounded-lg bg-[var(--accent)] px-6 py-3 text-lg font-bold text-white">
           + Post New Gig
         </button>
       </div>
@@ -143,14 +144,14 @@ export function EmployerGigs({
                                   <button
                                     onClick={() => changeStatus(job.id, "hire")}
                                     disabled={busyJob === job.id}
-                                    className="min-h-10 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+                                    className="min-h-10 cursor-pointer rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
                                   >
                                     Hire Worker
                                   </button>
                                   <button
                                     onClick={() => changeStatus(job.id, "reject")}
                                     disabled={busyJob === job.id}
-                                    className="min-h-10 rounded-lg border-2 border-[var(--alert)] px-4 py-2 text-sm font-bold text-[var(--alert)] disabled:opacity-50"
+                                    className="min-h-10 cursor-pointer rounded-lg border-2 border-[var(--alert)] px-4 py-2 text-sm font-bold text-[var(--alert)] disabled:cursor-not-allowed disabled:opacity-50"
                                   >
                                     Decline
                                   </button>
@@ -172,14 +173,14 @@ export function EmployerGigs({
                                     href={`/employer?jobId=${job.id}`}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="inline-flex min-h-10 items-center justify-center rounded-lg border-2 border-[var(--ink)] px-4 py-2 text-sm font-bold text-[var(--ink)]"
+                                    className="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border-2 border-[var(--ink)] px-4 py-2 text-sm font-bold text-[var(--ink)]"
                                   >
                                     Send Payout (₦)
                                   </a>
                                   <button
                                     onClick={() => changeStatus(job.id, "pay")}
                                     disabled={busyJob === job.id}
-                                    className="min-h-10 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+                                    className="min-h-10 cursor-pointer rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
                                   >
                                     Mark as Paid
                                   </button>
@@ -193,6 +194,13 @@ export function EmployerGigs({
                               )}
                             </div>
                           </div>
+
+                          {/* The onboarding channel unlocks the moment the
+                              worker is hired — this is where the employer hands
+                              over directives, credentials, and next steps. */}
+                          {(app.status === "hired" || app.status === "paid") && (
+                            <MessageThread jobId={job.id} role="employer" />
+                          )}
                         </li>
                       ))}
                     </ul>

@@ -48,30 +48,40 @@ export default function Employer() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-[#f4f1ea] text-neutral-900 flex items-center justify-center p-6">
+    <main id="main" className="flex min-h-screen items-center justify-center bg-[var(--paper)] p-6 text-[var(--ink)]">
       <div className="w-full max-w-xl">
-        <header className="flex items-baseline justify-between border-b-2 border-neutral-900 pb-3">
-          <span className="text-xs font-semibold uppercase tracking-[0.25em]">Payout desk</span>
-          <span className="text-xs text-neutral-500">{job.employer}</span>
+        <header className="flex items-baseline justify-between border-b-2 border-[var(--ink)] pb-3">
+          <span className="text-xs font-bold uppercase tracking-[0.25em]">Payout desk</span>
+          <span className="text-xs text-[var(--ink-soft)]">{job.employer}</span>
         </header>
 
         <h1 className="mt-8 text-3xl font-black leading-tight tracking-tight">
           Pay the worker who finished
           <br />
-          <span className="italic font-serif font-normal">“{job.title}”</span>
+          <span className="font-serif font-normal italic">“{job.title}”</span>
         </h1>
 
         <div className="mt-8 flex items-end gap-3">
-          <span className="text-neutral-500 text-sm mb-1">Amount due</span>
+          <span className="mb-1 text-sm text-[var(--ink-soft)]">Amount due</span>
           <span className="text-5xl font-black tabular-nums">{naira(job.pay)}</span>
         </div>
 
-        {error && <p className="mt-8 text-red-700">Couldn’t load the worker’s account: {error}</p>}
+        {error && (
+          <p role="alert" className="mt-8 font-bold text-[var(--alert)]">
+            Couldn’t load the worker’s account: {error}
+          </p>
+        )}
+
+        {/* Announce which field was copied, for screen-reader users who can't
+            see the transient "Copied" swap on the button. */}
+        <p aria-live="polite" className="sr-only">
+          {copied ? `${copied} copied to clipboard` : ""}
+        </p>
 
         {worker && (
-          <section className="mt-10 border border-neutral-300 bg-white">
-            <p className="px-5 pt-4 text-xs uppercase tracking-widest text-neutral-500">Send to this account</p>
-            <dl className="divide-y divide-neutral-200">
+          <section aria-label="Worker payout account" className="mt-10 border-2 border-[var(--line)] bg-white">
+            <p className="px-5 pt-4 text-xs uppercase tracking-widest text-[var(--ink-soft)]">Send to this account</p>
+            <dl className="divide-y divide-[var(--line)]">
               <Row label="Account name" value={worker.name} onCopy={copy} copied={copied} />
               <Row label="Account number" value={worker.accountNumber} mono onCopy={copy} copied={copied} />
               <Row label="Bank" value={worker.bankName} onCopy={copy} copied={copied} />
@@ -83,12 +93,12 @@ export default function Employer() {
           href={WEBSIM_URL}
           target="_blank"
           rel="noreferrer"
-          className="mt-8 inline-flex w-full items-center justify-center gap-2 bg-neutral-900 px-6 py-4 text-lg font-bold text-[#f4f1ea] transition-colors hover:bg-neutral-700"
+          className="mt-8 inline-flex w-full cursor-pointer items-center justify-center gap-2 bg-[var(--ink)] px-6 py-4 text-lg font-bold text-[var(--paper)] transition-colors hover:opacity-90"
         >
           Open Monnify to send payment →
         </a>
 
-        <p className="mt-6 text-sm leading-relaxed text-neutral-600">
+        <p className="mt-6 text-sm leading-relaxed text-[var(--ink-soft)]">
           Real sandbox money. Pay from the bank that matches the account above, then the worker
           hears Aide announce the confirmed amount — no screen, no OTP.
         </p>
@@ -113,12 +123,13 @@ function Row({
   return (
     <div className="flex items-center justify-between gap-4 px-5 py-4">
       <div>
-        <dt className="text-xs text-neutral-500">{label}</dt>
+        <dt className="text-xs text-[var(--ink-soft)]">{label}</dt>
         <dd className={`text-lg ${mono ? "font-mono tracking-wide" : "font-medium"}`}>{value}</dd>
       </div>
       <button
         onClick={() => onCopy(label, value)}
-        className="shrink-0 rounded-full border border-neutral-300 px-3 py-1 text-xs font-medium hover:border-neutral-900"
+        aria-label={copied === label ? `${label} copied` : `Copy ${label}`}
+        className="shrink-0 cursor-pointer rounded-full border-2 border-[var(--line)] px-3 py-1 text-xs font-bold hover:border-[var(--ink)]"
       >
         {copied === label ? "Copied" : "Copy"}
       </button>

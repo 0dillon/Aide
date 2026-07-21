@@ -12,6 +12,7 @@ import type * as accounts from "../accounts.js";
 import type * as applications from "../applications.js";
 import type * as events from "../events.js";
 import type * as jobs from "../jobs.js";
+import type * as messages from "../messages.js";
 import type * as wallets from "../wallets.js";
 
 import type {
@@ -25,6 +26,7 @@ declare const fullApi: ApiFromModules<{
   applications: typeof applications;
   events: typeof events;
   jobs: typeof jobs;
+  messages: typeof messages;
   wallets: typeof wallets;
 }>;
 

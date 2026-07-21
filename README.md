@@ -38,6 +38,10 @@ Monnify API call, re-verified server-side before Aide is allowed to say it out l
 - **100% voice-controllable** — account creation, profile setup, gig posting (including
   multiple-choice assessments), applications, assessments, hiring, and withdrawals all
   work entirely by voice.
+- **Post-hire onboarding channel** — the moment an employer hires an applicant, a private
+  employer↔worker message thread unlocks for onboarding directives, credentials, and next
+  steps. It works entirely by voice on both sides, and each message is read aloud to the
+  other party the instant it arrives.
 
 **Built with:** Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 ·
 Convex · Vercel AI SDK + DeepSeek · **Monnify API** · Web Speech API · edge-tts.
@@ -180,7 +184,13 @@ voice-driven; the screen simply mirrors it.
    payment lands, Aide announces the amount — unprompted, via the Monnify webhook → Convex
    reactive path.
 
-7. **Withdrawing funds.** *"Send ten thousand naira to my GTBank account."* Aide validates
+7. **Onboarding after the hire.** Hiring unlocks a private message channel between the two
+   parties. The employer sends onboarding steps or credentials — *"Aide, message the worker:
+   your login is…"* — and the worker hears it read aloud automatically, can ask *"Aide, read
+   my messages,"* and replies by voice. It's the missing "now actually do the job" step,
+   made accessible. Both sides also see the same live thread on screen.
+
+8. **Withdrawing funds.** *"Send ten thousand naira to my GTBank account."* Aide validates
    the destination by Name Enquiry, reads the verified account name and amount back, and
    asks for the spoken security phrase. On confirmation, the real disbursement runs, and
    Aide offers to save the destination as a beneficiary for next time.
@@ -270,17 +280,103 @@ results are captured in [`PROOF.md`](PROOF.md).
 
 ---
 
+## 6. Accessibility Design Rationale
+
+Aide's users are blind, low-vision, and colorblind workers, so the interface is not a
+sighted-first design with accessibility retrofitted — every visual decision starts from a
+documented accessibility need. The voice layer serves users who can't see the screen at
+all; this section covers the *visual* layer, for low-vision and colorblind users who use
+their remaining sight. All of the values below live as design tokens in
+[`app/globals.css`](app/globals.css).
+
+### Typography — Atkinson Hyperlegible
+
+The body font is **Atkinson Hyperlegible**, commissioned by the **Braille Institute of
+America** specifically for low-vision readers. Conventional typefaces optimize for aesthetic
+uniformity, which is precisely what harms legibility: the letter pairs that low-vision
+readers most often confuse — `I` / `l` / `1`, `O` / `0`, `b` / `d`, `rn` / `m` — are drawn
+to look similar. Atkinson Hyperlegible does the opposite, deliberately **exaggerating the
+differences** between similar characters (distinct letter terminals, a slashed/oval-vs-round
+zero, unambiguous ascenders) so each glyph is identifiable even when it lands on a damaged or
+low-acuity region of the retina. Fewer character confusions means fewer misreads — which
+matters most for the one thing this app is about: **account numbers and money amounts**. The
+font is self-hosted at build time via `next/font`, so it never depends on a slow third-party
+request to render.
+
+### Sizing scale — large by default, not by zoom
+
+- **18px base font size** (`html { font-size: 112.5% }`). WCAG treats 18px (or 14px bold)
+  as the "large text" threshold, and low-vision users routinely need to zoom sighted-first
+  sites to reach it. Starting there means the interface is usable **without** the user having
+  to discover and operate a zoom control they may not see.
+- **1.6 line-height and a generous type scale.** Extra leading reduces the "line crowding"
+  that causes low-vision readers to lose their place or skip lines; headings and money
+  figures are set large so the most important information is the easiest to read.
+- **~48px minimum touch/click targets** (`min-h-12` throughout). Large targets help users
+  with low vision *and* co-occurring motor impairments acquire controls reliably, per WCAG
+  2.5.5 Target Size.
+
+### Color — colorblind-safe *and* high-contrast
+
+The palette is built on the **Okabe–Ito** qualitative palette, the de-facto standard for
+color-vision-deficient (CVD) safe design, chosen so hues stay distinguishable across
+deuteranopia, protanopia, and tritanopia. Two rules govern it:
+
+1. **No meaning is ever carried by color alone.** This is the single most important rule for
+   colorblind users. Every status in Aide is *also* stated in text and/or shape — "✓ Hired",
+   "Applied — hired", "✓ Skill verified", "Declined" — and the active nav item is marked
+   three independent ways (an `aria-current` attribute, inverted colors, **and** an
+   underline). There are **no red/green pairs** used as the sole signal, because red↔green is
+   the most common form of color blindness.
+2. **Every foreground meets WCAG AAA contrast (≥ 7:1) on the paper background**, well beyond
+   the AA (4.5:1) minimum, because low-vision users need contrast headroom, not the bare
+   pass:
+   - `--ink` `#191919` body text — **~15.8:1**
+   - `--ink-soft` `#474e58` secondary text — **~8.4:1**
+   - `--accent` `#005a9e` blue (links/actions) — **~7.3:1**, and a hue that stays legible in
+     all common CVD types
+   - `--alert` `#9e3900` dark vermillion (errors) — **~7:1**
+   - `--good` `#006b54` dark teal (success) — always paired with a text label
+
+The background is a **warm off-white (`#fffdf7`)** rather than pure `#ffffff`: maximal
+white-on-black glare triggers photophobia and visual fatigue common in low-vision
+conditions, and a slightly warm, slightly dimmed paper reduces that without sacrificing
+contrast.
+
+### Reinforcing signals for the remaining sight
+
+- **Visible keyboard focus** — a 3px `--focus` outline with offset on every focusable
+  element, switched to a brighter blue on dark surfaces so it never disappears against the
+  transcript panel.
+- **Interactive cursor feedback** — a pointer cursor on everything clickable and a
+  not-allowed cursor on anything disabled, applied application-wide, so a low-vision user
+  moving a large cursor can feel out what is actionable without reading fine print.
+- **Reduced-motion support** — `prefers-reduced-motion` disables animation (which can cause
+  disorientation or nausea) while preserving Aide's "speaking" glow as a static, non-moving
+  cue.
+- **Semantic structure for screen readers** — landmark regions (`banner`, `nav`, `main`,
+  labelled `region`s), `role="log"` transcript and message threads with `aria-live` so new
+  speech and incoming messages are announced automatically, `role="alert"` on errors,
+  properly associated `<label>`s on every control, and a skip-to-content link.
+
+The throughline: **redundancy**. Text, shape, contrast, and voice each carry the meaning on
+their own, so no single sensory channel is load-bearing — which is what lets one interface
+serve blind, low-vision, and colorblind users at the same time.
+
+---
+
 ## Project layout
 
 | Path | What it holds |
 |---|---|
 | `app/` | Next.js App Router UI: voice page, screens, API routes |
 | `app/aide/` | The voice engine (mic, TTS queue, interrupts) and its React provider |
+| `app/jobs/message-thread.tsx` | The reactive post-hire onboarding thread, shared by both parties |
 | `app/employer/` | Employer "payout desk" showing the worker's real NUBAN to pay into |
-| `convex/` | Schema and server functions — accounts, wallets, applications, events |
+| `convex/` | Schema and server functions — accounts, wallets, applications, events, messages |
 | `lib/monnify.ts` | Monnify client: auth, reserved accounts, verify, transfer, webhook HMAC |
 | `lib/agent/` | Aide's system prompt and tool definitions |
-| `lib/store/` | Domain layer over Convex: accounts, payments, applications, jobs, events |
+| `lib/store/` | Domain layer over Convex: accounts, payments, applications, jobs, events, messages |
 | `src/*.ts` | Standalone CLI proof scripts |
 
 ## Documentation

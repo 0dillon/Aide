@@ -102,7 +102,7 @@ export default function AidePage() {
               ? "Aide has stopped listening. Tap to wake it."
               : `Aide is ${status.toLowerCase().replace("…", "")}. Tap to interrupt Aide and speak.`
           }
-          className={`relative grid h-48 w-48 place-items-center rounded-full bg-[var(--accent)] text-xl font-bold text-white shadow-xl transition-transform active:scale-95 ${
+          className={`relative grid h-48 w-48 cursor-pointer place-items-center rounded-full bg-[var(--accent)] text-xl font-bold text-white shadow-xl transition-transform active:scale-95 ${
             speaking ? "aide-speaking" : ""
           }`}
         >
@@ -132,7 +132,7 @@ export default function AidePage() {
             This browser has no speech recognition. Use Chrome, or type below.
           </p>
         )}
-        {error && <p className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
+        {error && <p role="alert" className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
         {micStatus && <p className="max-w-md text-center text-sm text-[var(--ink-soft)]">Mic: {micStatus}</p>}
 
         <MicMeter dormant={dormant} />
@@ -185,7 +185,7 @@ function TypeFallback({ onSend, disabled }: { onSend: (t: string) => void; disab
       <button
         type="submit"
         disabled={disabled}
-        className="min-h-12 rounded-lg bg-[var(--ink)] px-5 py-3 font-bold text-[var(--paper)] disabled:opacity-50"
+        className="min-h-12 cursor-pointer rounded-lg bg-[var(--ink)] px-5 py-3 font-bold text-[var(--paper)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         Send
       </button>

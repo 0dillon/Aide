@@ -6,6 +6,7 @@ import { useAide } from "../aide";
 import { AssessmentPanel } from "./assessment-panel";
 import { EmployerGigs } from "./employer-gigs";
 import { ExternalJobsSection } from "./external-jobs";
+import { MessageThread } from "./message-thread";
 import { naira, type Application, type AssessmentData, type AssessmentResult, type Job } from "./types";
 
 // The jobs screen. Workers see filterable listings, apply, and take
@@ -218,6 +219,39 @@ function JobsPageInner() {
         <AssessmentPanel assessment={assessment} onResult={setResult} onClose={() => setAssessment(null)} reload={load} />
       )}
 
+      {(() => {
+        const hired = apps.filter((a) => a.status === "hired" || a.status === "paid");
+        if (hired.length === 0) return null;
+        return (
+          <section id="onboarding" aria-label="Your hired jobs and onboarding messages" className="mt-8">
+            <h2 className="text-2xl font-bold">You’re hired — onboarding</h2>
+            <p className="mt-1 text-lg text-[var(--ink-soft)]">
+              For each job you’ve been hired for, your employer’s onboarding messages appear here. Say “Aide, read my
+              messages” to hear them, or reply below.
+            </p>
+            <ul className="mt-4 space-y-5">
+              {hired.map((a) => {
+                const job = jobs.find((j) => j.id === a.jobId);
+                return (
+                  <li key={a.jobId}>
+                    <article aria-label={`Onboarding for ${job?.title ?? "your job"}`} className="rounded-xl border-2 border-[var(--line)] bg-white p-6">
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <h3 className="text-xl font-bold">{job?.title ?? "Your hired job"}</h3>
+                        <span className="rounded-full border-2 border-[var(--good)] px-3 py-0.5 text-sm font-bold text-[var(--good)]">
+                          {a.status === "paid" ? "✓ Paid" : "✓ Hired"}
+                        </span>
+                      </div>
+                      {job?.employer && <p className="mt-1 text-[var(--ink-soft)]">Employer: {job.employer}</p>}
+                      <MessageThread jobId={a.jobId} role="worker" />
+                    </article>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })()}
+
       <section id="filters" aria-label="Job filters" className="mt-8 rounded-xl border-2 border-[var(--line)] bg-white p-5">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Filter jobs</h2>
         <p className="mt-1 text-sm text-[var(--ink-soft)]">
@@ -285,7 +319,7 @@ function JobsPageInner() {
                 setFMax("");
                 setFReq("any");
               }}
-              className="min-h-12 rounded-lg border-2 border-[var(--ink)] px-4 font-bold"
+              className="min-h-12 cursor-pointer rounded-lg border-2 border-[var(--ink)] px-4 font-bold"
             >
               Clear filters
             </button>
@@ -328,7 +362,7 @@ function JobsPageInner() {
                     <button
                       onClick={() => applyTo(job)}
                       disabled={busyJob === job.id}
-                      className="min-h-12 rounded-lg bg-[var(--accent)] px-6 py-3 text-lg font-bold text-white disabled:opacity-50"
+                      className="min-h-12 cursor-pointer rounded-lg bg-[var(--accent)] px-6 py-3 text-lg font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {busyJob === job.id ? "Applying…" : "Apply"}
                     </button>
@@ -349,7 +383,7 @@ function JobsPageInner() {
                     <button
                       onClick={() => startAssessment(job)}
                       disabled={busyJob === job.id}
-                      className="min-h-12 rounded-lg border-2 border-[var(--accent)] px-6 py-3 text-lg font-bold text-[var(--accent)] disabled:opacity-50"
+                      className="min-h-12 cursor-pointer rounded-lg border-2 border-[var(--accent)] px-6 py-3 text-lg font-bold text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Start spoken assessment
                     </button>

@@ -35,7 +35,7 @@ export function Nav() {
                 <Link
                   href={l.href}
                   aria-current={active ? "page" : undefined}
-                  className={`inline-flex min-h-12 shrink-0 items-center rounded-lg px-2.5 text-base font-bold sm:px-4 sm:text-lg ${
+                  className={`inline-flex min-h-12 shrink-0 cursor-pointer items-center rounded-lg px-2.5 text-base font-bold sm:px-4 sm:text-lg ${
                     active
                       ? "bg-[var(--ink)] text-[var(--paper)] underline underline-offset-4"
                       : "text-[var(--ink)] hover:underline hover:underline-offset-4"

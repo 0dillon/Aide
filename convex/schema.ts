@@ -127,6 +127,22 @@ export default defineSchema({
     .index("by_account", ["accountId"])
     .index("by_account_job", ["accountId", "jobId"]),
 
+  // The post-hire onboarding channel. Once an employer hires an applicant, this
+  // is the only place they can pass job-specific directives, credentials, or
+  // next steps. Keyed by the gig (jobId) — one applicant per gig in this demo —
+  // and reactive, so each new message reaches the other party's browser (and
+  // their Aide, which reads it aloud) across serverless instances, exactly like
+  // the events feed. `from` records which side spoke; workerAccountId ties the
+  // thread to the applicant it belongs to.
+  messages: defineTable({
+    jobId: v.string(),
+    workerAccountId: v.string(),
+    from: v.union(v.literal("worker"), v.literal("employer")),
+    authorName: v.string(),
+    text: v.string(),
+    at: v.number(),
+  }).index("by_job", ["jobId"]),
+
   // The reactive replacement for the subscriber-set + SSE + poller. The webhook
   // (or the poller) inserts an event row; the browser's useQuery on this table
   // reactively receives it — even across serverless instances. Payment events

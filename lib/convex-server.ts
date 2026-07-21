@@ -13,7 +13,12 @@ const client = url ? new ConvexHttpClient(url) : null;
 // fire-and-forget event publish, these callers need a hard failure if Convex
 // isn't configured rather than silently losing data.
 export function convexClient(): ConvexHttpClient {
-  if (!client) throw new Error("NEXT_PUBLIC_CONVEX_URL is not set — Convex is required.");
+  if (!client) {
+    throw new Error(
+      "NEXT_PUBLIC_CONVEX_URL is not set. Convex holds all of Aide's data. " +
+        "Run `npx convex dev` in a second terminal — it creates a deployment and writes the URL to .env.local. See README.",
+    );
+  }
   return client;
 }
 

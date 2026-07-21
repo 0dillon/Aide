@@ -1,6 +1,7 @@
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { newId, worker, type Account, type Role, type Worker } from "./state";
+import { ensureSeeded } from "./seed";
 
 // Accounts are now backed by Convex (shared across serverless instances). The
 // legacy in-memory `worker` record is still kept in sync for the demo worker
@@ -72,6 +73,9 @@ export async function createAccount(name: string, role: Role, email?: string, pa
 }
 
 export async function getAccount(id?: string | null): Promise<Account> {
+  // Every request path reaches here, so this is where a brand-new deployment
+  // gets its demo identities — no manual seeding step to discover.
+  await ensureSeeded().catch(() => {});
   const key = id || "demo-worker";
   let a = (await convexClient().query(api.accounts.getByKey, { key })) as ConvexAccount | null;
   if (!a && key !== "demo-worker") {
@@ -81,6 +85,7 @@ export async function getAccount(id?: string | null): Promise<Account> {
 }
 
 export async function listAccounts(): Promise<Account[]> {
+  await ensureSeeded().catch(() => {});
   const all = (await convexClient().query(api.accounts.list, {})) as ConvexAccount[];
   return all.map(toAccount);
 }

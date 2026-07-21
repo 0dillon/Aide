@@ -9,7 +9,11 @@ import { useState, type ReactNode } from "react";
 export function ConvexClientProvider({ children }: { children: ReactNode }) {
   const [client] = useState(() => {
     const url = process.env.NEXT_PUBLIC_CONVEX_URL;
-    if (!url) throw new Error("NEXT_PUBLIC_CONVEX_URL is not set");
+    if (!url) {
+      throw new Error(
+        "NEXT_PUBLIC_CONVEX_URL is not set. Run `npx convex dev` in a second terminal (it writes the URL to .env.local), then restart `npm run dev`.",
+      );
+    }
     return new ConvexReactClient(url);
   });
   return <ConvexProvider client={client}>{children}</ConvexProvider>;

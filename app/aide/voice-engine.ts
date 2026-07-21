@@ -36,11 +36,18 @@ const MIC_SILENT_MIN_MS = 3000;
 // function (/api/speak) instead. Either way the browser voice is the fallback.
 const TTS_PATH = process.env.NEXT_PUBLIC_TTS_PATH || "/api/tts";
 
-// Spoken while the model is still thinking. It is a FIXED string on purpose:
-// /api/speak sets a long Cache-Control, so after the very first use this comes
-// back from cache in a fraction of the time fresh synthesis takes, which is the
-// whole point — it has to be instant to be worth saying.
-const THINKING_FILLER = "One moment.";
+// Last-resort filler for when the model produces nothing at all for a while.
+// Aide is instructed to open every reply with its own short sentence, so this
+// should rarely be heard — hearing it every turn would be a verbal tic, not
+// conversation. The phrases are a FIXED set so the long Cache-Control on
+// /api/speak applies and they play instantly; they rotate so a slow patch
+// doesn't repeat the same words back to back.
+const THINKING_FILLERS = ["One moment.", "Let me check.", "Just a second.", "Bear with me."];
+// Measured against production: DeepSeek's first sentence reaches the speaker at
+// roughly 3.5s. Anything below that fires on EVERY turn, which is how a helpful
+// bridge turns into a verbal tic. This sits past it, so it only speaks when a
+// reply is genuinely stuck.
+const FILLER_AFTER_MS = 4200;
 
 const MIC_SILENT_WARNING =
   "I can't hear your microphone. It may be muted or turned off. Please check your microphone, then talk to me again. You can also type to me in the box on the screen.";
@@ -71,6 +78,7 @@ export class VoiceEngine {
   // beginReply().
   private replyAbandoned = false;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
+  private fillerIndex = -1;
   // The next sentence's audio, already downloading while the current one
   // speaks — this is what keeps sentence boundaries seamless.
   private prefetch: { text: string; audio: Promise<string | null> } | null = null;
@@ -118,10 +126,12 @@ export class VoiceEngine {
     if (document.hidden) this.onVisibility();
     else this.startRecognition();
 
-    // Warm the filler into the browser cache (and the serverless function)
-    // while the greeting plays, so the first time it is genuinely needed it
+    // Warm the fillers into the browser cache (and the serverless function)
+    // while the greeting plays, so the first time one is genuinely needed it
     // starts instantly instead of paying full synthesis latency.
-    void fetch(`${TTS_PATH}?text=${encodeURIComponent(THINKING_FILLER)}`).catch(() => {});
+    for (const phrase of THINKING_FILLERS) {
+      void fetch(`${TTS_PATH}?text=${encodeURIComponent(phrase)}`).catch(() => {});
+    }
   }
 
   // Speak-only mode for browsers with no SpeechRecognition (Firefox, most iOS):
@@ -166,8 +176,9 @@ export class VoiceEngine {
       this.ackTimer = null;
       if (this.replyAbandoned || !this.replyPending) return;
       if (this.currentAudio || this.currentUtter || this.queue.length > 0) return;
-      this.speakNow(THINKING_FILLER);
-    }, 900);
+      this.fillerIndex = (this.fillerIndex + 1) % THINKING_FILLERS.length;
+      this.speakNow(THINKING_FILLERS[this.fillerIndex]);
+    }, FILLER_AFTER_MS);
   }
 
   endReply(): void {

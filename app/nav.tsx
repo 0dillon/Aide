@@ -68,8 +68,18 @@ function AccountSwitcher() {
       .catch(() => {});
   }, []);
 
+  // The transcript is restored across reloads, so it has to be dropped whenever
+  // the identity changes — otherwise the next account inherits the previous
+  // person's conversation, and the model is given their context.
+  const forgetConversation = () => {
+    try {
+      sessionStorage.removeItem("aide-transcript");
+    } catch {}
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
+    forgetConversation();
     window.location.href = "/";
   };
 
@@ -80,7 +90,10 @@ function AccountSwitcher() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
-    if (res.ok) window.location.reload();
+    if (res.ok) {
+      forgetConversation();
+      window.location.reload();
+    }
   };
 
   // Logged-in real user: show who they are and a log-out; the demo switcher

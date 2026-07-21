@@ -45,6 +45,23 @@ export function useAide() {
 // strict mode does this).
 let greetedThisLoad = false;
 
+// The conversation survives a reload. Without this, refreshing wiped the
+// transcript AND the context the model is given, so Aide forgot everything
+// mid-task and greeted the user from scratch — punishing on a screen you
+// cannot see. Session storage keeps it to this tab and clears when it closes.
+const TRANSCRIPT_KEY = "aide-transcript";
+const MAX_SAVED = 40;
+
+function loadTranscript(): Msg[] {
+  try {
+    const raw = sessionStorage.getItem(TRANSCRIPT_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed.filter((m) => m?.role && typeof m.content === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 // ONE engine per page, ever. React strict mode mounts effects twice in
 // development, and a second engine means two recognizers fighting for the mic
 // and two voices talking over each other — with the orphaned one impossible to
@@ -177,18 +194,28 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     engineRef.current = engine;
     engine.start();
 
-    // Greet with real state: pending assessments, money to withdraw, jobs.
     if (!greetedThisLoad) {
       greetedThisLoad = true;
-      fetch("/api/greeting")
-        .then((res) => res.json())
-        .catch(() => null)
-        .then((data) => {
-          const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
-          const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key.`;
-          setMessages((m) => [...m, { role: "assistant", content: greeting }]);
-          engine.speak(greeting);
-        });
+      const previous = loadTranscript();
+
+      if (previous.length > 0) {
+        // Coming back to an existing conversation: restore it so the model
+        // still has the context, and say something short instead of running
+        // through the full introduction again.
+        setMessages(previous);
+        engine.speak("Welcome back. I still have our conversation — carry on.");
+      } else {
+        // Greet with real state: pending assessments, money to withdraw, jobs.
+        fetch("/api/greeting")
+          .then((res) => res.json())
+          .catch(() => null)
+          .then((data) => {
+            const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
+            const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key.`;
+            setMessages((m) => [...m, { role: "assistant", content: greeting }]);
+            engine.speak(greeting);
+          });
+      }
     }
 
     return () => {
@@ -215,6 +242,17 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     },
     [speak],
   );
+
+  // Keep the saved transcript in step with what's on screen, capped so a long
+  // session can't outgrow the storage quota.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    try {
+      sessionStorage.setItem(TRANSCRIPT_KEY, JSON.stringify(messages.slice(-MAX_SAVED)));
+    } catch {
+      /* private mode or quota — the conversation just won't survive a reload */
+    }
+  }, [messages]);
 
   // Learn this browser's account id on mount (and, server-side, start the local
   // payment poller). The id drives the reactive event subscription.

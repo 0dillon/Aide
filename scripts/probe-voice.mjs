@@ -42,7 +42,18 @@ await page.evaluate(() => {
 await page.waitForTimeout(1500);
 // A gesture first: phones (and this browser) refuse audio until the user acts.
 await page.mouse.click(200, 400);
-await page.waitForTimeout(1000);
+
+// Wait until the greeting has actually finished, otherwise the measurement is
+// meaningless — Aide is mid-sentence when the question lands, so the filler
+// correctly stays quiet and time-to-first-word looks artificially good.
+await page
+  .waitForFunction(
+    () => !/Aide is speaking/.test(document.body.textContent || ""),
+    { timeout: 45000, polling: 200 },
+  )
+  .catch(() => {});
+events.push(`${at()} --- greeting finished, page is quiet ---`);
+await page.waitForTimeout(500);
 
 const box = page.locator("#type-to-aide");
 await box.fill("what jobs do you have for me");

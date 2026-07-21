@@ -36,6 +36,12 @@ const MIC_SILENT_MIN_MS = 3000;
 // function (/api/speak) instead. Either way the browser voice is the fallback.
 const TTS_PATH = process.env.NEXT_PUBLIC_TTS_PATH || "/api/tts";
 
+// Spoken while the model is still thinking. It is a FIXED string on purpose:
+// /api/speak sets a long Cache-Control, so after the very first use this comes
+// back from cache in a fraction of the time fresh synthesis takes, which is the
+// whole point — it has to be instant to be worth saying.
+const THINKING_FILLER = "One moment.";
+
 const MIC_SILENT_WARNING =
   "I can't hear your microphone. It may be muted or turned off. Please check your microphone, then talk to me again. You can also type to me in the box on the screen.";
 
@@ -64,6 +70,7 @@ export class VoiceEngine {
   // sentences afterwards, and none of them may be spoken. Cleared by the next
   // beginReply().
   private replyAbandoned = false;
+  private ackTimer: ReturnType<typeof setTimeout> | null = null;
   // The next sentence's audio, already downloading while the current one
   // speaks — this is what keeps sentence boundaries seamless.
   private prefetch: { text: string; audio: Promise<string | null> } | null = null;
@@ -110,6 +117,11 @@ export class VoiceEngine {
     // talking over each other the moment a second tab is open.
     if (document.hidden) this.onVisibility();
     else this.startRecognition();
+
+    // Warm the filler into the browser cache (and the serverless function)
+    // while the greeting plays, so the first time it is genuinely needed it
+    // starts instantly instead of paying full synthesis latency.
+    void fetch(`${TTS_PATH}?text=${encodeURIComponent(THINKING_FILLER)}`).catch(() => {});
   }
 
   // Speak-only mode for browsers with no SpeechRecognition (Firefox, most iOS):
@@ -144,10 +156,26 @@ export class VoiceEngine {
   beginReply(): void {
     this.replyPending = true;
     this.replyAbandoned = false;
+
+    // A blind user gets no spinner. Several seconds of silence after speaking
+    // is indistinguishable from the app being broken, so if the model hasn't
+    // produced anything audible shortly, say something. Only fires when the
+    // wait is real — a fast reply cancels it before it is ever heard.
+    if (this.ackTimer) clearTimeout(this.ackTimer);
+    this.ackTimer = setTimeout(() => {
+      this.ackTimer = null;
+      if (this.replyAbandoned || !this.replyPending) return;
+      if (this.currentAudio || this.currentUtter || this.queue.length > 0) return;
+      this.speakNow(THINKING_FILLER);
+    }, 900);
   }
 
   endReply(): void {
     this.replyPending = false;
+    if (this.ackTimer) {
+      clearTimeout(this.ackTimer);
+      this.ackTimer = null;
+    }
     // The last chunk may have finished playing while we were still holding the
     // turn open — close it out now.
     if (!this.currentAudio && !this.currentUtter && this.queue.length === 0 && this.speaking) {
@@ -158,6 +186,11 @@ export class VoiceEngine {
   // Queue a sentence behind whatever is already being said.
   queueSpeak(text: string): void {
     if (this.replyAbandoned) return; // user cut this reply off
+    // Real words arrived in time — no need to stall.
+    if (this.ackTimer) {
+      clearTimeout(this.ackTimer);
+      this.ackTimer = null;
+    }
     // Something is actively playing — queue behind it and prime the pipeline.
     if (this.currentAudio || this.currentUtter) {
       this.queue.push(text);
@@ -177,6 +210,10 @@ export class VoiceEngine {
     // Whatever is still streaming from the model must not be spoken.
     this.replyPending = false;
     this.replyAbandoned = true;
+    if (this.ackTimer) {
+      clearTimeout(this.ackTimer);
+      this.ackTimer = null;
+    }
     this.stopAllSpeech();
     this.speaking = false;
     this.handlers.onState({ speaking: false });

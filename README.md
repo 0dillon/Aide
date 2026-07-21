@@ -78,7 +78,7 @@ across restarts and serverless instances.
 
 | Endpoint | Method | Role in Aide |
 |---|---|---|
-| `/api/v1/disbursements/account/validate?accountNumber=…&bankCode=…` | `GET` | **Name Enquiry.** Powers two things: the inline "✓ Account found: NAME" validation under the withdrawal fields (OPay-style), and the read-back of the real destination name before any withdrawal is armed. |
+| `/api/v1/disbursements/account/validate?accountNumber=…&bankCode=…` | `GET` | **Name Enquiry.** Powers two things: the inline "✓ Account found: NAME" validation under the withdrawal fields, and the read-back of the real destination name before any withdrawal is armed. |
 | `/api/v2/disbursements/single` | `POST` | The actual transfer, executed only after the spoken confirmation passes. Sourced from the merchant wallet. |
 | `/api/v2/disbursements/single/validate-otp` | `POST` | OTP-authorization step, wired for the production disbursement flow. |
 | `/api/v1/disbursements/wallet-balance?walletId=…` | `GET` | Merchant wallet balance check (used by the standalone proof scripts). |
@@ -109,7 +109,7 @@ A polling fallback covers local development without a public tunnel.
 
 > **On sandbox honesty:** third-party disbursement in sandbox returns
 > `PENDING_AUTHORIZATION` because live payout is gated behind full business KYC. Aide
-> narrates this state truthfully rather than faking a success — see [`PROOF.md`](PROOF.md)
+> narrates this state truthfully rather than faking a success
 > for the mock-free verification log.
 
 ---
@@ -266,8 +266,7 @@ npm run webhook    # signed inbound webhook receiver (pair with: npx localtunnel
 npm run balance    # wallet balance check
 ```
 
-`npm run proof` prints `SUCCESS` or the documented `PENDING_AUTHORIZATION` sandbox state;
-results are captured in [`PROOF.md`](PROOF.md).
+`npm run proof` prints `SUCCESS` or the documented `PENDING_AUTHORIZATION` sandbox state
 
 ### Troubleshooting
 
@@ -382,6 +381,3 @@ serve blind, low-vision, and colorblind users at the same time.
 ## Documentation
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — system design, data flow, extension points
-- [`PROOF.md`](PROOF.md) — mock-free Monnify sandbox verification log
-- [`POSITIONING.md`](POSITIONING.md) — competitive landscape
-- [`PRD.md`](PRD.md) — product requirements

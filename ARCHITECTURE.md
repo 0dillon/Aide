@@ -88,8 +88,7 @@ from Convex's `_id`, so cookies, wallet references, and Monnify customer records
   `PAID` reserved-account transactions.
 - **Withdrawal** is two steps, voice-confirmed (a spoken security phrase for workers, a
   random confirm word for employers), and hits `/disbursements/single`. Sandbox returns
-  `PENDING_AUTHORIZATION` because third-party disbursement needs full business KYC —
-  documented in `PROOF.md`.
+  `PENDING_AUTHORIZATION` because third-party disbursement needs full business KYC.
 
 ## Adding a capability
 
@@ -105,5 +104,5 @@ from Convex's `_id`, so cookies, wallet references, and Monnify customer records
 - Single seeded demo worker; applications belong to that worker.
 - The in-memory `state.ts` (demo worker + seed gigs) resets on server restart; Convex data
   persists.
-- Outbound payouts are gated behind Monnify business activation (see `PROOF.md`).
+- Outbound payouts are gated behind Monnify business activation (see the sandbox note above).
 - Web Speech quality varies by browser; Chrome is the target. A type fallback exists.

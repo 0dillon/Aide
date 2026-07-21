@@ -47,6 +47,9 @@ export default defineSchema({
     payoutAccount: v.optional(v.string()),
     payoutBankCode: v.optional(v.string()),
     payoutAccountName: v.optional(v.string()),
+    // When the payout destination was last changed. A newly added destination
+    // is held before money may be sent to it — see COOLING_OFF in payments.ts.
+    payoutSetAt: v.optional(v.number()),
     pendingWithdrawal: v.optional(
       v.object({ amount: v.number(), phrase: v.string(), createdAt: v.number() }),
     ),

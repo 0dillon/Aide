@@ -83,6 +83,42 @@ export default function AboutPage() {
           </p>
         </Row>
 
+        <Row label="Someone else in the room">
+          <p>
+            This is the hardest question a voice-first money product has to answer, so here
+            is the honest version. A spoken confirmation does <strong>not</strong> stop
+            somebody standing beside you — they hear the word Aide reads out. Treating
+            &ldquo;said the right word&rdquo; as proof of identity would be false comfort.
+          </p>
+          <p>
+            What actually protects the money is that it can only ever leave to a bank
+            account registered <em>earlier</em>, whose real owner&rsquo;s name was checked
+            with the bank and read back to you. Pointing the account somewhere new starts a
+            hold before anything can be sent there. So a moment of access is not enough:
+            redirecting your money takes time you would notice, not a sentence someone can
+            say while you are out of the room. Single withdrawals are capped, and every one
+            is announced aloud and written to a ledger you can ask Aide to read back.
+          </p>
+          <p className="text-[var(--ink-soft)]">
+            The missing piece is verifying <em>who</em> is speaking, not just that the right
+            words were said. Speaker verification is the correct next control, and it is not
+            built yet — we would rather name that than imply the voice itself is a password.
+          </p>
+        </Row>
+
+        <Row label="Receiving money needs no code">
+          <p>
+            Nothing gates money coming <em>in</em> — that is not a risk, and it is why the
+            account number is the one thing Aide will repeat as often as you like. The
+            controls sit on the way out, where they belong.
+          </p>
+          <p className="text-[var(--ink-soft)]">
+            Inbound payments are never taken on trust either: a webhook alone is not proof.
+            Every payment is re-fetched from the payment provider and checked server-side
+            before Aide will say a naira has landed.
+          </p>
+        </Row>
+
         <Row label="Assessments are not proctored">
           <p>
             Skill checks are short and spoken, and they are deliberately not locked down. Camera

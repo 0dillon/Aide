@@ -71,7 +71,15 @@ export const setPayout = mutation({
   args: { accountId: v.string(), accountReference: v.string(), payoutAccount: v.string(), payoutBankCode: v.string(), payoutAccountName: v.string() },
   handler: async (ctx, a) => {
     const w = await walletDoc(ctx, a.accountId);
-    const patch = { payoutAccount: a.payoutAccount, payoutBankCode: a.payoutBankCode, payoutAccountName: a.payoutAccountName };
+    // Re-saving the SAME destination doesn't restart the hold — only pointing
+    // the money somewhere new does.
+    const changed = w?.payoutAccount !== a.payoutAccount || w?.payoutBankCode !== a.payoutBankCode;
+    const patch = {
+      payoutAccount: a.payoutAccount,
+      payoutBankCode: a.payoutBankCode,
+      payoutAccountName: a.payoutAccountName,
+      payoutSetAt: changed ? Date.now() : (w?.payoutSetAt ?? Date.now()),
+    };
     if (w) await ctx.db.patch(w._id, patch);
     else await ctx.db.insert("wallets", { accountId: a.accountId, accountReference: a.accountReference, status: "unprovisioned", knownTxRefs: [], txSeeded: false, ...patch });
   },

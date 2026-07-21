@@ -13,6 +13,17 @@ const CONFIRM_WORDS = ["mango", "sunrise", "guitar", "river", "orange", "candle"
 const PENDING_TTL_MS = 5 * 60 * 1000;
 const BALANCE_TTL_MS = 20_000;
 
+// A spoken confirmation cannot defend against someone standing in the room —
+// they hear the word Aide reads out. What actually protects the money is that
+// it may only ever leave to a destination registered EARLIER, so redirecting it
+// takes time rather than a moment of opportunity. This is the same "new
+// beneficiary" hold banks apply. Kept short by default so the flow stays
+// demonstrable; production would use hours.
+const PAYOUT_COOLING_OFF_MS = Number(process.env.PAYOUT_COOLING_OFF_MS ?? 2 * 60 * 1000);
+
+// A single spoken instruction should never be able to empty an account.
+const MAX_WITHDRAWAL = Number(process.env.MAX_WITHDRAWAL_NGN ?? 100_000);
+
 function makeConfirmPhrase(): string {
   return CONFIRM_WORDS[Math.floor(Math.random() * CONFIRM_WORDS.length)];
 }
@@ -38,6 +49,7 @@ type WalletDoc = {
   payoutAccount?: string;
   payoutBankCode?: string;
   payoutAccountName?: string;
+  payoutSetAt?: number;
   pendingWithdrawal?: { amount: number; phrase: string; createdAt: number };
   knownTxRefs?: string[];
   txSeeded?: boolean;
@@ -54,6 +66,7 @@ function toWallet(d: WalletDoc): Wallet {
     payoutAccount: d.payoutAccount,
     payoutBankCode: d.payoutBankCode,
     payoutAccountName: d.payoutAccountName,
+    payoutSetAt: d.payoutSetAt,
     pendingWithdrawal: d.pendingWithdrawal,
     knownTxRefs: new Set(d.knownTxRefs ?? []),
     txSeeded: d.txSeeded ?? false,
@@ -193,6 +206,23 @@ export async function armWithdrawal(accountId: string, amount: number): Promise<
   }
   if (!Number.isFinite(amount) || amount <= 0) {
     return { ok: false, message: "Amount must be a positive number." };
+  }
+  if (amount > MAX_WITHDRAWAL) {
+    return {
+      ok: false,
+      message: `For safety, a single withdrawal cannot be more than ${MAX_WITHDRAWAL} naira. Take it out in smaller amounts.`,
+    };
+  }
+  // New-beneficiary hold: money may only go to a destination that was already
+  // registered before now, so someone who gains a moment of access cannot point
+  // the account at themselves and drain it in the same sitting.
+  const heldFor = w.payoutSetAt ? Date.now() - w.payoutSetAt : PAYOUT_COOLING_OFF_MS;
+  if (heldFor < PAYOUT_COOLING_OFF_MS) {
+    const mins = Math.max(1, Math.ceil((PAYOUT_COOLING_OFF_MS - heldFor) / 60000));
+    return {
+      ok: false,
+      message: `That payout account was only just added, so it is on hold for about ${mins} more minute${mins === 1 ? "" : "s"} for your safety. You can withdraw to it after that.`,
+    };
   }
   const { balance } = await getBalance(accountId);
   if (amount > balance) {

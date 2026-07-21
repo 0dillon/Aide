@@ -7,11 +7,18 @@ import { useAide } from "./aide";
 // recognition, so it shows whether the microphone is delivering ANY audio.
 // If this stays at zero while the user talks, Chrome is capturing the wrong
 // (or a muted) input device.
-function MicMeter() {
+function MicMeter({ dormant }: { dormant: boolean }) {
   const [level, setLevel] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    // When Aide has stopped listening, this must let go of the microphone too.
+    // Otherwise the meter keeps its own capture stream open, the browser's
+    // recording indicator stays lit, and "Aide stopped listening" is a lie.
+    if (dormant) {
+      setLevel(null);
+      return;
+    }
     let raf = 0;
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
@@ -40,7 +47,7 @@ function MicMeter() {
       stream?.getTracks().forEach((t) => t.stop());
       audioCtx?.close();
     };
-  }, []);
+  }, [dormant]);
 
   if (failed) return <p className="text-sm font-bold text-[var(--alert)]">Mic check: could not open the microphone.</p>;
   if (level === null) return null;
@@ -59,14 +66,16 @@ function MicMeter() {
 // Aide's home: two halves. Left — Aide itself, always listening, glowing
 // while it speaks. Right — the running transcript of this session.
 export default function AidePage() {
-  const { active, listening, speaking, thinking, supported, interim, micStatus, error, messages, send, interrupt } = useAide();
+  const { active, listening, speaking, dormant, thinking, supported, interim, micStatus, error, messages, send, interrupt } = useAide();
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [messages, interim]);
 
-  const status = speaking
+  const status = dormant
+    ? "Asleep"
+    : speaking
     ? "Speaking…"
     : thinking
       ? "Thinking…"
@@ -87,7 +96,11 @@ export default function AidePage() {
 
         <button
           onClick={interrupt}
-          aria-label={`Aide is ${status.toLowerCase().replace("…", "")}. Tap to interrupt Aide and speak.`}
+          aria-label={
+            dormant
+              ? "Aide has stopped listening. Tap to wake it."
+              : `Aide is ${status.toLowerCase().replace("…", "")}. Tap to interrupt Aide and speak.`
+          }
           className={`relative grid h-48 w-48 place-items-center rounded-full bg-[var(--accent)] text-xl font-bold text-white shadow-xl transition-transform active:scale-95 ${
             speaking ? "aide-speaking" : ""
           }`}
@@ -103,7 +116,7 @@ export default function AidePage() {
         </button>
 
         <p aria-live="polite" className="min-h-6 text-lg font-bold text-[var(--ink-soft)]">
-          {speaking ? "Aide is speaking — tap anywhere to stop" : thinking ? "Aide is thinking" : listening ? "Aide is listening — just talk" : ""}
+          {dormant ? "Aide stopped listening — tap anywhere to wake it" : speaking ? "Aide is speaking — tap anywhere to stop" : thinking ? "Aide is thinking" : listening ? "Aide is listening — just talk" : ""}
         </p>
 
         <div className="min-h-16 max-w-lg text-center">
@@ -121,7 +134,7 @@ export default function AidePage() {
         {error && <p className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
         {micStatus && <p className="max-w-md text-center text-sm text-[var(--ink-soft)]">Mic: {micStatus}</p>}
 
-        <MicMeter />
+        <MicMeter dormant={dormant} />
 
         <TypeFallback onSend={send} disabled={thinking} />
       </section>

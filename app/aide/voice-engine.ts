@@ -10,6 +10,9 @@ export type VoiceState = {
   active: boolean;
   listening: boolean;
   speaking: boolean;
+  // Mic deliberately closed after a stretch of silence. Not an error — Aide is
+  // waiting to be woken, and any tap or key press brings it back.
+  dormant: boolean;
   interim: string;
   micStatus: string;
   error: string | null;
@@ -49,6 +52,12 @@ const THINKING_FILLERS = ["One moment.", "Let me check.", "Just a second.", "Bea
 // reply is genuinely stuck.
 const FILLER_AFTER_MS = 4200;
 
+// Holding the microphone open forever costs battery, keeps a recognizer
+// streaming the room to a speech service, and means every stray noise is being
+// listened to. After this much quiet Aide closes the mic and waits to be woken.
+const IDLE_SLEEP_MS = 90_000;
+const SLEEP_NOTICE = "I'll stop listening for now. Tap the screen or press any key when you want me.";
+
 const MIC_SILENT_WARNING =
   "I can't hear your microphone. It may be muted or turned off. Please check your microphone, then talk to me again. You can also type to me in the box on the screen.";
 
@@ -79,6 +88,10 @@ export class VoiceEngine {
   private replyAbandoned = false;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
   private fillerIndex = -1;
+  // Sleep/wake: the mic closes after a stretch of silence and a gesture
+  // reopens it, so Aide isn't streaming an empty room indefinitely.
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private dormant = false;
   // The next sentence's audio, already downloading while the current one
   // speaks — this is what keeps sentence boundaries seamless.
   private prefetch: { text: string; audio: Promise<string | null> } | null = null;
@@ -124,7 +137,10 @@ export class VoiceEngine {
     // tab runs its own recognizer and speaks its own replies — two Aides
     // talking over each other the moment a second tab is open.
     if (document.hidden) this.onVisibility();
-    else this.startRecognition();
+    else {
+      this.startRecognition();
+      this.armIdleTimer();
+    }
 
     // Warm the fillers into the browser cache (and the serverless function)
     // while the greeting plays, so the first time one is genuinely needed it
@@ -261,7 +277,15 @@ export class VoiceEngine {
       this.speak(pending);
       return;
     }
-    if (!this.speaking) return;
+    // Asleep after a quiet spell — any gesture brings the mic back.
+    if (this.dormant) {
+      this.wake();
+      return;
+    }
+    if (!this.speaking) {
+      this.armIdleTimer(); // still around; don't nod off mid-interaction
+      return;
+    }
     // Typing to Aide, or using a control, shouldn't count as "shut up".
     const el = e.target as HTMLElement | null;
     if (el?.closest("input, textarea, select, button, a")) return;
@@ -281,6 +305,30 @@ export class VoiceEngine {
   private scheduleRestart(delay: number): void {
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = setTimeout(() => this.startRecognition(), delay);
+  }
+
+  // Restart the silence countdown. Called whenever Aide hears something or
+  // finishes speaking — i.e. whenever the conversation is demonstrably alive.
+  private armIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (!this.active || this.speaking || this.dormant) return;
+      this.dormant = true;
+      this.pauseRecognition();
+      this.handlers.onState({ dormant: true, micStatus: "asleep — tap to wake" });
+      // Say so, or a blind user has no way to know the mic just closed.
+      this.speakNow(SLEEP_NOTICE);
+    }, IDLE_SLEEP_MS);
+  }
+
+  // Bring the mic back after sleep. Triggered by any tap or key press.
+  private wake(): void {
+    if (!this.dormant) return;
+    this.dormant = false;
+    this.handlers.onState({ dormant: false, micStatus: "waking up…" });
+    if (this.active) this.startRecognition();
+    this.armIdleTimer();
   }
 
   // Close the mic and cancel anything that would reopen it. Used whenever Aide
@@ -356,6 +404,7 @@ export class VoiceEngine {
     };
     rec.onspeechstart = () => {
       console.info("Aide mic: speech detected");
+      this.armIdleTimer(); // someone is talking — the session is alive
       onState({ micStatus: "hearing speech…" });
     };
 
@@ -486,7 +535,11 @@ export class VoiceEngine {
     this.speaking = false;
     this.handlers.onState({ speaking: false });
     this.speechEndedAt = Date.now();
+    // Aide just finished the sleep announcement — stay asleep rather than
+    // reopening the mic it only just closed.
+    if (this.dormant) return;
     if (this.active) this.startRecognition();
+    this.armIdleTimer();
   }
 
   // Download a sentence's audio COMPLETELY before it plays. Pointing an
@@ -496,7 +549,7 @@ export class VoiceEngine {
   // later. A fully buffered clip always plays gapless.
   private async fetchSpeech(text: string): Promise<string | null> {
     try {
-      const res = await fetch(`${TTS_PATH}?text=${encodeURIComponent(text)}`);
+      const res = await fetch(`${TTS_PATH}?text=${encodeURIComponent(forSpeech(text))}`);
       if (!res.ok) return null;
       const blob = await res.blob();
       return blob.size > 0 ? URL.createObjectURL(blob) : null;
@@ -612,7 +665,7 @@ export class VoiceEngine {
   private speakWithBrowserVoice(text: string): void {
     if (!window.speechSynthesis) return;
 
-    const u = new SpeechSynthesisUtterance(text);
+    const u = new SpeechSynthesisUtterance(forSpeech(text));
     const voice = getBestNativeVoice(window.speechSynthesis);
     if (voice) u.voice = voice;
     else u.lang = "en-NG";
@@ -669,6 +722,32 @@ export class VoiceEngine {
 
     window.speechSynthesis.speak(u);
   }
+}
+
+// Text written to be READ is not text meant to be HEARD. Em dashes make the
+// neural voice stop dead mid-clause, currency symbols come out as "N" or get
+// skipped, and digit-grouped amounts are read a digit at a time. This rewrites
+// a line into something that sounds like a person saying it.
+export function forSpeech(text: string): string {
+  return (
+    text
+      // Currency: "₦12,000" / "NGN 12000" → "12000 naira", said naturally.
+      .replace(/(?:₦|NGN)\s*([\d,]+(?:\.\d+)?)/gi, (_, n) => `${String(n).replace(/,/g, "")} naira`)
+      // Thousands separators otherwise get spelled out digit by digit.
+      .replace(/\b(\d{1,3})(?:,(\d{3}))+\b/g, (m) => m.replace(/,/g, ""))
+      // Dashes used as punctuation become a comma's worth of pause.
+      .replace(/\s*[—–]\s*/g, ", ")
+      // A hyphen between words is a pause too; keep hyphenated words intact.
+      .replace(/(\s)-(\s)/g, "$1, ")
+      // Markdown and stray symbols the model sometimes emits.
+      .replace(/[*_`#>|]/g, "")
+      .replace(/\s*&\s*/g, " and ")
+      // Collapse whatever that left behind.
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([,.!?])/g, "$1")
+      .replace(/,\s*,/g, ",")
+      .trim()
+  );
 }
 
 function getBestNativeVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {

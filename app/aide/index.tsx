@@ -19,6 +19,7 @@ type AideContextValue = {
   active: boolean;
   listening: boolean;
   speaking: boolean;
+  dormant: boolean;
   thinking: boolean;
   capturing: boolean;
   supported: boolean;
@@ -73,6 +74,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     active: false,
     listening: false,
     speaking: false,
+    dormant: false,
     interim: "",
     micStatus: "starting…",
     error: null,
@@ -282,6 +284,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         active: voice.active,
         listening: voice.listening,
         speaking: voice.speaking,
+        dormant: voice.dormant,
         thinking,
         capturing,
         supported,

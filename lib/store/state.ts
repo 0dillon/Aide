@@ -87,6 +87,8 @@ export type Wallet = {
   payoutAccount?: string;
   payoutBankCode?: string;
   payoutAccountName?: string;
+  // When the payout destination was last changed (new-beneficiary hold).
+  payoutSetAt?: number;
   pendingWithdrawal?: PendingWithdrawal;
   // Payment-event bookkeeping, per wallet: which inbound transactions have
   // already been announced, and whether history was seeded silently.

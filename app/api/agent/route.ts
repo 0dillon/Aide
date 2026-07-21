@@ -82,7 +82,11 @@ export async function POST(req: Request) {
           (t) => (t.toolName === "create_account" || t.toolName === "switch_account") && t.result?.userId,
         )?.result?.userId;
 
-        emit(controller, { t: "done", navigateTo, newUserId, state: await snapshot(account.id) });
+        // Logout: cookies can't be cleared mid-stream, so the client calls
+        // POST /api/auth/logout and restarts when it sees this flag.
+        const loggedOut = !!toolResults.find((t) => t.toolName === "log_out" && t.result?.ok);
+
+        emit(controller, { t: "done", navigateTo, newUserId, loggedOut, state: await snapshot(account.id) });
       } catch (e) {
         emit(controller, { t: "error", message: (e as Error).message });
       }

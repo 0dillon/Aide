@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAide } from "../aide";
 
 // Real login for credentialed accounts. Passwords are typed, never spoken —
@@ -12,7 +11,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
   const { speak } = useAide();
 
   const submit = async (e: React.FormEvent) => {
@@ -27,8 +25,9 @@ export default function LoginPage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not log in.");
-      speak(`Welcome back, ${data.name}. You are logged in.`);
-      router.push("/profile");
+      // Full navigation, not router.push: the app restarts as the logged-in
+      // identity — fresh transcript and greeting, correct nav auth state.
+      window.location.assign("/");
     } catch (err) {
       const msg = (err as Error).message;
       setError(msg);

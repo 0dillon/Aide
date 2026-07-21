@@ -90,21 +90,56 @@ export function makeTools(account: Account) {
 
     post_gig: tool({
       description:
-        "Post a new gig for the employer, fully by voice. Collect the gig title or type, the skill it needs, the pay in Naira, whether it requires a spoken assessment, and if so the exact assessment question to ask applicants. Read all the details back and get a spoken yes before calling. Only works for employer accounts.",
+        "Post a new gig for the employer, fully by voice — including multiple-choice assessments and time limits, everything the on-screen form can do. Collect the title, skill, and pay. Ask whether applicants must pass an assessment; if so, ask whether it is a spoken (oral) question or multiple choice. For oral, collect the exact question. For multiple choice, collect each question with its options and which option is correct (build the mcqQuestions array). Optionally collect a time limit. Read everything back and get a spoken yes before calling. Only works for employer accounts.",
       parameters: z.object({
         title: z.string().describe("gig title, e.g. 'Transcribe a 20 minute podcast'"),
         skill: z.string().describe("the skill or gig type, e.g. transcription"),
         pay: z.number().describe("pay in Naira"),
         requiresAssessment: z.boolean(),
-        assessmentQuestion: z.string().optional().describe("the spoken question applicants must answer, if an assessment is required"),
+        assessmentType: z
+          .enum(["oral", "mcq"])
+          .optional()
+          .describe("'oral' = one spoken question; 'mcq' = multiple choice. Required when requiresAssessment is true."),
+        assessmentQuestion: z.string().optional().describe("the spoken question applicants must answer (oral assessments only)"),
+        mcqQuestions: z
+          .array(
+            z.object({
+              question: z.string().describe("the question text"),
+              options: z.array(z.string()).min(2).max(6).describe("2 to 6 answer options, in the order read aloud"),
+              correctIndex: z.number().int().describe("0-based index of the correct option"),
+            }),
+          )
+          .optional()
+          .describe("the questions for a multiple choice assessment"),
+        timeLimitMinutes: z.number().optional().describe("optional time limit for the assessment, in minutes (up to 60)"),
       }),
-      execute: async ({ title, skill, pay, requiresAssessment, assessmentQuestion }) => {
+      execute: async ({ title, skill, pay, requiresAssessment, assessmentType, assessmentQuestion, mcqQuestions, timeLimitMinutes }) => {
         if (account.role !== "employer") {
           return { ok: false, message: "Only employer accounts can post gigs. Offer to create an employer account first." };
         }
-        if (!Number.isFinite(pay) || pay <= 0) return { ok: false, message: "Pay must be a positive amount in Naira." };
-        const job = await store.postJob({ title, skill, pay, employer: account.name, requiresAssessment, assessmentQuestion });
-        return { ok: true, jobId: job.id, title: job.title, pay: job.pay, requiresAssessment: job.requiresAssessment };
+        const v = store.validateGig({
+          title,
+          skill,
+          pay,
+          requiresAssessment,
+          // Default to oral if they asked for an assessment without saying which.
+          assessmentType: requiresAssessment ? assessmentType || "oral" : undefined,
+          assessmentQuestion,
+          mcqQuestions,
+          timeLimit: timeLimitMinutes !== undefined ? Math.round(timeLimitMinutes * 60) : undefined,
+        });
+        if (!v.ok) return { ok: false, message: v.message };
+        const job = await store.postJob({ ...v.gig, employer: account.name });
+        return {
+          ok: true,
+          jobId: job.id,
+          title: job.title,
+          pay: job.pay,
+          requiresAssessment: job.requiresAssessment,
+          assessmentType: job.assessmentType,
+          questionCount: job.mcqQuestions?.length,
+          timeLimit: job.timeLimit,
+        };
       },
     }),
 
@@ -270,6 +305,13 @@ export function makeTools(account: Account) {
       },
     }),
 
+    log_out: tool({
+      description:
+        "Sign the user out of this device when they ask to log out or sign out. Confirm aloud first. The browser clears the session right after this returns — tell them they are signed out and that the page will start fresh.",
+      parameters: z.object({}),
+      execute: async () => ({ ok: true, loggedOut: true, message: "The browser will clear the session now." }),
+    }),
+
     assessment_time_left: tool({
       description:
         "How much time is left on the user's running, time-limited assessment. Call this when they ask how much time they have; report the remaining time honestly, then return to the current question.",
@@ -315,16 +357,61 @@ export function makeTools(account: Account) {
       execute: async ({ accountNumber, bankCode }) => registerPayout(account.id, accountNumber, bankCode),
     }),
 
+    set_security_phrase: tool({
+      description:
+        "Set the worker's spoken security phrase — the accessible replacement for SMS codes. It confirms every withdrawal, so treat it like a PIN: collect a short memorable phrase of at least two words, read it back once for confirmation, then call this. Never suggest a phrase yourself and never repeat it in later conversation.",
+      parameters: z.object({ phrase: z.string().describe("the phrase exactly as the user said it") }),
+      execute: async ({ phrase }) => {
+        if (account.role !== "worker") return { ok: false, message: "Only worker accounts use a spoken security phrase." };
+        return store.setSecurityPhrase(account.id, phrase);
+      },
+    }),
+
+    list_beneficiaries: tool({
+      description: "List this user's saved withdrawal beneficiaries (name, account number, bank). Use when they ask who they can send to, or to disambiguate a destination.",
+      parameters: z.object({}),
+      execute: async () => ({ ok: true, beneficiaries: await store.listBeneficiaries(account.id) }),
+    }),
+
+    save_beneficiary: tool({
+      description:
+        "Save a withdrawal destination as a beneficiary so future withdrawals can go to it by name. Call after the user says yes to saving — typically right after a successful withdrawal to a new account (pass the accountName from that result), or with details they dictate (the account is then re-verified).",
+      parameters: z.object({
+        accountNumber: z.string(),
+        bankCode: z.string().describe("3-digit NIP bank code"),
+        accountName: z.string().optional().describe("verified account name, if known from a preceding withdrawal"),
+      }),
+      execute: async ({ accountNumber, bankCode, accountName }) => {
+        let name = accountName;
+        if (!name) {
+          try {
+            const { validateBankAccount } = await import("../monnify");
+            name = (await validateBankAccount(accountNumber, bankCode)).accountName;
+          } catch {
+            return { ok: false, message: "Bank details not found — check the account number and bank." };
+          }
+        }
+        const r = await store.saveBeneficiary(account.id, { accountName: name, accountNumber, bankCode });
+        return { ok: true, saved: r.created, accountName: name, message: r.created ? "Saved as a beneficiary." : "That account was already saved." };
+      },
+    }),
+
     prepare_withdrawal: tool({
       description:
-        "Step 1 of 2 for a withdrawal from this user's own wallet. Arms a withdrawal of `amount` Naira to the saved payout account and returns a one-word confirmation phrase. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read the amount and account NAME back to the user, then tell them to say the returned `phrase` word aloud to confirm.",
-      parameters: z.object({ amount: z.number().describe("amount in Naira to withdraw") }),
-      execute: async ({ amount }) => store.armWithdrawal(account.id, amount),
+        "Step 1 of 2 for a withdrawal from this user's own wallet. The destination can be: a new account (pass accountNumber + bankCode — it is verified by name enquiry), a saved beneficiary (pass beneficiaryName), or omitted to use their only/last saved destination. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read the amount and the verified account NAME back. Then: if mode is 'passphrase' (workers), tell them to say THEIR OWN security phrase to confirm — never say or guess it. If mode is 'word' (employers), give them the returned `phrase` word to say.",
+      parameters: z.object({
+        amount: z.number().describe("amount in Naira to withdraw"),
+        accountNumber: z.string().optional().describe("destination account number, for a new destination"),
+        bankCode: z.string().optional().describe("3-digit NIP bank code for the destination"),
+        beneficiaryName: z.string().optional().describe("name of a saved beneficiary to send to"),
+      }),
+      execute: async ({ amount, accountNumber, bankCode, beneficiaryName }) =>
+        store.armWithdrawal(account.id, amount, { accountNumber, bankCode, beneficiaryName }),
     }),
 
     confirm_withdrawal: tool({
       description:
-        "Step 2 of 2 for a withdrawal. Pass exactly what the user said when asked to confirm. Only call this after the user has spoken; never invent the phrase. If it matches the armed confirmation word, the real bank transfer runs and the status is returned.",
+        "Step 2 of 2 for a withdrawal. Pass exactly what the user said when asked to confirm. Only call this after the user has spoken; never invent the phrase. On success, if the result contains offerSaveBeneficiary, ask whether to save that account as a beneficiary and call save_beneficiary if they say yes.",
       parameters: z.object({ spokenPhrase: z.string().describe("the exact words the user just spoke to confirm") }),
       execute: async ({ spokenPhrase }) => confirmWithdrawal(account.id, spokenPhrase),
     }),

@@ -14,10 +14,14 @@ export async function GET(req: Request) {
     return Response.json({
       balance,
       name: acc.name,
+      role: acc.role,
       accountNumber: account,
       bankName,
       payoutAccount: wallet.payoutAccount,
       payoutAccountName: wallet.payoutAccountName,
+      // Workers confirm withdrawals with a personal spoken phrase; the page
+      // shows the setup step until one exists.
+      hasSecurityPhrase: !!wallet.hasSecurityPhrase,
       pendingWithdrawal: wallet.pendingWithdrawal ? { amount: wallet.pendingWithdrawal.amount } : null,
     });
   } catch (e) {

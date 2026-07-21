@@ -86,9 +86,10 @@ export default function AidePage() {
           : "Off";
 
   return (
-    <main id="main" className="grid min-h-[calc(100vh-4rem)] lg:grid-cols-2">
-      {/* Left half — Aide, glowing while it speaks */}
-      <section aria-label="Talk to Aide" className="flex flex-col items-center justify-center gap-8 p-8 lg:p-14">
+    <main id="main" className="grid min-h-[calc(100vh-4rem)] grid-cols-1 lg:grid-cols-2">
+      {/* Left half — Aide, glowing while it speaks. min-w-0 lets the grid
+          track shrink to the viewport instead of blowing out on narrow phones. */}
+      <section aria-label="Talk to Aide" className="flex min-w-0 flex-col items-center justify-center gap-8 p-5 sm:p-8 lg:p-14">
         <div className="max-w-md text-center">
           <h1 className="text-5xl font-bold tracking-tight">Aide</h1>
           <p className="mt-3 text-lg text-[var(--ink-soft)]">Always listening. Find work, prove your skills, get paid — just talk.</p>
@@ -140,14 +141,14 @@ export default function AidePage() {
       </section>
 
       {/* Right half — the session transcript */}
-      <aside aria-label="Conversation transcript" className="dark-surface flex flex-col bg-[var(--panel)] p-8 text-[var(--panel-ink)] lg:p-12">
+      <aside aria-label="Conversation transcript" className="dark-surface flex min-w-0 flex-col bg-[var(--panel)] p-5 text-[var(--panel-ink)] sm:p-8 lg:p-12">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--panel-soft)]">Transcript</h2>
         <div ref={logRef} role="log" className="mt-4 flex-1 space-y-4 overflow-y-auto pr-2" style={{ maxHeight: "calc(100vh - 12rem)" }}>
           {messages.length === 0 && <p className="text-[var(--panel-soft)]">Your conversation with Aide will appear here.</p>}
           {messages.map((m, i) => (
             <div key={i} className={m.role === "assistant" ? "border-l-4 border-[var(--glow)] pl-3" : "pl-3"}>
               <p className="text-sm font-bold text-[var(--panel-soft)]">{m.role === "user" ? "You said" : "Aide said"}</p>
-              <p className="text-lg leading-relaxed">{m.content}</p>
+              <p className="text-lg leading-relaxed break-words">{m.content}</p>
             </div>
           ))}
           {thinking && <p className="pl-3 italic text-[var(--panel-soft)]">Aide is thinking…</p>}

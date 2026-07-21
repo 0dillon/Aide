@@ -1,8 +1,9 @@
-import { createReservedAccount, getReservedAccount, getReservedAccountTransactions } from "../monnify";
+import { createHash } from "node:crypto";
+import { createReservedAccount, getReservedAccount, getReservedAccountTransactions, validateBankAccount } from "../monnify";
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
-import { type Wallet, type WithdrawalRecord } from "./state";
+import { type Beneficiary, type Wallet, type WithdrawalRecord } from "./state";
 
 // Per-account Monnify wallets, now backed by Convex so balances, payout
 // destinations, and armed withdrawals are shared across serverless instances.
@@ -50,7 +51,8 @@ type WalletDoc = {
   payoutBankCode?: string;
   payoutAccountName?: string;
   payoutSetAt?: number;
-  pendingWithdrawal?: { amount: number; phrase: string; createdAt: number };
+  securityPhraseHash?: string;
+  pendingWithdrawal?: Wallet["pendingWithdrawal"];
   knownTxRefs?: string[];
   txSeeded?: boolean;
 };
@@ -67,6 +69,7 @@ function toWallet(d: WalletDoc): Wallet {
     payoutBankCode: d.payoutBankCode,
     payoutAccountName: d.payoutAccountName,
     payoutSetAt: d.payoutSetAt,
+    hasSecurityPhrase: !!d.securityPhraseHash,
     pendingWithdrawal: d.pendingWithdrawal,
     knownTxRefs: new Set(d.knownTxRefs ?? []),
     txSeeded: d.txSeeded ?? false,
@@ -193,17 +196,126 @@ export async function setPayout(accountId: string, account: string, bankCode: st
   });
 }
 
-// Step 1 of withdrawal: arm it. Returns the details Aide must read back plus
-// the confirm word the user must speak. No money moves here — but the amount
-// is checked against the wallet's real available balance up front.
-export async function armWithdrawal(accountId: string, amount: number): Promise<
-  | { ok: true; amount: number; accountName: string; account: string; phrase: string }
-  | { ok: false; message: string }
+// --- Spoken security phrase (workers' accessible replacement for SMS OTP) ---
+
+// Normalize + hash: forgiving of case, punctuation, and spacing, since the
+// phrase arrives via imperfect speech recognition.
+function normalizePhrase(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+function hashPhrase(text: string): string {
+  return createHash("sha256").update(normalizePhrase(text)).digest("hex");
+}
+
+// All contiguous word-windows of the spoken text, hashed — so "my phrase is
+// sunny garden gate" still matches a stored "sunny garden gate".
+function candidateHashesFor(spoken: string): string[] {
+  const words = normalizePhrase(spoken).split(" ").filter(Boolean);
+  const out = new Set<string>();
+  const MAX_WINDOW = 8;
+  for (let len = 1; len <= Math.min(words.length, MAX_WINDOW); len++) {
+    for (let i = 0; i + len <= words.length; i++) {
+      out.add(createHash("sha256").update(words.slice(i, i + len).join(" ")).digest("hex"));
+    }
+  }
+  return [...out];
+}
+
+export async function setSecurityPhrase(accountId: string, phrase: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const normalized = normalizePhrase(phrase);
+  if (normalized.split(" ").length < 2 || normalized.length < 8) {
+    return { ok: false, message: "The security phrase should be at least two words — something memorable only you would say." };
+  }
+  await convexClient().mutation(api.wallets.setSecurityPhrase, {
+    accountId,
+    accountReference: walletReferenceFor(accountId),
+    hash: hashPhrase(phrase),
+  });
+  return { ok: true };
+}
+
+// --- Beneficiaries: saved withdrawal destinations ---
+
+export async function listBeneficiaries(accountId: string): Promise<Beneficiary[]> {
+  const rows = (await convexClient().query(api.wallets.listBeneficiaries, { accountId })) as Beneficiary[];
+  return rows.map((b) => ({
+    accountId: b.accountId,
+    accountName: b.accountName,
+    accountNumber: b.accountNumber,
+    bankCode: b.bankCode,
+    bankName: b.bankName,
+    at: b.at,
+  }));
+}
+
+export async function saveBeneficiary(
+  accountId: string,
+  b: { accountName: string; accountNumber: string; bankCode: string; bankName?: string },
+): Promise<{ created: boolean }> {
+  return await convexClient().mutation(api.wallets.saveBeneficiary, { accountId, ...b, at: Date.now() });
+}
+
+// Where a withdrawal should go. Explicit account details are name-enquiry
+// verified; a beneficiary is matched by (partial) name; with neither, a sole
+// beneficiary or the legacy saved payout account is used.
+export type WithdrawalDestination = { accountNumber?: string; bankCode?: string; beneficiaryName?: string };
+
+async function resolveDestination(
+  accountId: string,
+  dest: WithdrawalDestination | undefined,
+  wallet: Wallet,
+): Promise<{ ok: true; account: string; bankCode: string; accountName: string; addedAt?: number } | { ok: false; message: string }> {
+  if (dest?.accountNumber && dest?.bankCode) {
+    try {
+      const r = await validateBankAccount(dest.accountNumber.trim(), dest.bankCode.trim());
+      return { ok: true, account: r.accountNumber, bankCode: dest.bankCode.trim(), accountName: r.accountName, addedAt: Date.now() };
+    } catch {
+      return { ok: false, message: "Bank details not found — check the account number and bank, then try again." };
+    }
+  }
+  const beneficiaries = await listBeneficiaries(accountId);
+  if (dest?.beneficiaryName) {
+    const q = dest.beneficiaryName.trim().toLowerCase();
+    const matches = beneficiaries.filter((b) => b.accountName.toLowerCase().includes(q));
+    if (matches.length === 1) {
+      const b = matches[0];
+      return { ok: true, account: b.accountNumber, bankCode: b.bankCode, accountName: b.accountName, addedAt: b.at };
+    }
+    if (matches.length > 1) {
+      return { ok: false, message: `More than one saved beneficiary matches "${dest.beneficiaryName}" — say the full name.` };
+    }
+    return { ok: false, message: `No saved beneficiary matches "${dest.beneficiaryName}". Give the account number and bank instead.` };
+  }
+  if (beneficiaries.length === 1) {
+    const b = beneficiaries[0];
+    return { ok: true, account: b.accountNumber, bankCode: b.bankCode, accountName: b.accountName, addedAt: b.at };
+  }
+  if (beneficiaries.length > 1) {
+    const names = beneficiaries.map((b) => b.accountName).join(", ");
+    return { ok: false, message: `Which account should the money go to? Your saved beneficiaries are: ${names}. Or give a new account number and bank.` };
+  }
+  if (wallet.payoutAccount && wallet.payoutBankCode && wallet.payoutAccountName) {
+    return { ok: true, account: wallet.payoutAccount, bankCode: wallet.payoutBankCode, accountName: wallet.payoutAccountName, addedAt: wallet.payoutSetAt };
+  }
+  return { ok: false, message: "No destination account. Give the account number and the bank the money should go to." };
+}
+
+// Step 1 of withdrawal: arm it, with its own destination. No money moves here —
+// the amount is checked against the wallet's real available balance up front,
+// and the destination is verified by name enquiry. Workers confirm with their
+// personal spoken security phrase (the accessible OTP replacement); employers
+// confirm with a per-withdrawal random word.
+export async function armWithdrawal(accountId: string, amount: number, dest?: WithdrawalDestination): Promise<
+  | { ok: true; amount: number; accountName: string; account: string; mode: "word" | "passphrase"; phrase?: string }
+  | { ok: false; message: string; needsSecurityPhrase?: boolean }
 > {
   const w = await getWallet(accountId);
-  if (!w.payoutAccount || !w.payoutBankCode || !w.payoutAccountName) {
-    return { ok: false, message: "No payout account saved yet. Register one first." };
-  }
   if (!Number.isFinite(amount) || amount <= 0) {
     return { ok: false, message: "Amount must be a positive number." };
   }
@@ -213,10 +325,23 @@ export async function armWithdrawal(accountId: string, amount: number): Promise<
       message: `For safety, a single withdrawal cannot be more than ${MAX_WITHDRAWAL} naira. Take it out in smaller amounts.`,
     };
   }
+  const acc = await getAccount(accountId);
+  const mode: "word" | "passphrase" = acc.role === "worker" ? "passphrase" : "word";
+  if (mode === "passphrase" && !w.hasSecurityPhrase) {
+    return {
+      ok: false,
+      needsSecurityPhrase: true,
+      message:
+        "You need a spoken security phrase before withdrawing — it replaces the SMS code. Choose a short phrase only you would know, and set it first.",
+    };
+  }
+  const resolved = await resolveDestination(accountId, dest, w);
+  if (!resolved.ok) return resolved;
+
   // New-beneficiary hold: money may only go to a destination that was already
   // registered before now, so someone who gains a moment of access cannot point
   // the account at themselves and drain it in the same sitting.
-  const heldFor = w.payoutSetAt ? Date.now() - w.payoutSetAt : PAYOUT_COOLING_OFF_MS;
+  const heldFor = resolved.addedAt ? Date.now() - resolved.addedAt : PAYOUT_COOLING_OFF_MS;
   if (heldFor < PAYOUT_COOLING_OFF_MS) {
     const mins = Math.max(1, Math.ceil((PAYOUT_COOLING_OFF_MS - heldFor) / 60000));
     return {
@@ -229,11 +354,29 @@ export async function armWithdrawal(accountId: string, amount: number): Promise<
     return { ok: false, message: `That is more than the available balance of ${balance} naira.` };
   }
   const phrase = makeConfirmPhrase();
-  await convexClient().mutation(api.wallets.armPending, { accountId, amount, phrase, createdAt: Date.now() });
-  return { ok: true, amount, accountName: w.payoutAccountName, account: w.payoutAccount, phrase };
+  await convexClient().mutation(api.wallets.armPending, {
+    accountId,
+    amount,
+    phrase,
+    mode,
+    destAccount: resolved.account,
+    destBankCode: resolved.bankCode,
+    destAccountName: resolved.accountName,
+    createdAt: Date.now(),
+  });
+  return {
+    ok: true,
+    amount,
+    accountName: resolved.accountName,
+    account: resolved.account,
+    mode,
+    // The random word is only revealed for word mode; a worker's security
+    // phrase is theirs and is never echoed back.
+    phrase: mode === "word" ? phrase : undefined,
+  };
 }
 
-// Step 2 of withdrawal: verify the spoken confirmation against the armed phrase.
+// Step 2 of withdrawal: verify what was spoken against the armed check.
 // The check-and-clear is a single atomic Convex mutation, so two concurrent
 // confirmations can never both authorize the same transfer. This is the
 // consent gate — deliberately NOT called a second factor: anyone in the room
@@ -245,12 +388,16 @@ export async function verifyWithdrawal(accountId: string, spokenPhrase: string):
   const r = await convexClient().mutation(api.wallets.consumePending, {
     accountId,
     spokenPhrase,
+    candidateHashes: candidateHashesFor(spokenPhrase),
     now: Date.now(),
     ttlMs: PENDING_TTL_MS,
   });
   if (!r.ok) {
     if (r.reason === "none") return { ok: false, message: "No withdrawal is awaiting confirmation. Start one first." };
     if (r.reason === "expired") return { ok: false, message: "The confirmation timed out. Please start the withdrawal again." };
+    if (r.mode === "passphrase") {
+      return { ok: false, message: "That didn't match your security phrase. Please say your security phrase to confirm." };
+    }
     return { ok: false, message: `That didn't match. Ask them to say the word "${r.phrase}" to confirm.` };
   }
   return {

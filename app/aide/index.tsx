@@ -53,14 +53,27 @@ let greetedThisLoad = false;
 const TRANSCRIPT_KEY = "aide-transcript";
 const MAX_SAVED = 40;
 
-function loadTranscript(): Msg[] {
+// The transcript is keyed to the account that produced it. Restoring it for a
+// DIFFERENT signed-in account would leak one identity's conversation into
+// another's (and mute the fresh greeting + onboarding a new account must get),
+// so a saved transcript whose owner doesn't match is discarded, not restored.
+function loadTranscript(): { owner: string | null; messages: Msg[] } {
   try {
     const raw = sessionStorage.getItem(TRANSCRIPT_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    return Array.isArray(parsed) ? parsed.filter((m) => m?.role && typeof m.content === "string") : [];
+    if (parsed && typeof parsed.owner === "string" && Array.isArray(parsed.messages)) {
+      return { owner: parsed.owner, messages: parsed.messages.filter((m: Msg) => m?.role && typeof m.content === "string") };
+    }
+    return { owner: null, messages: [] };
   } catch {
-    return [];
+    return { owner: null, messages: [] };
   }
+}
+
+export function clearSavedTranscript(): void {
+  try {
+    sessionStorage.removeItem(TRANSCRIPT_KEY);
+  } catch {}
 }
 
 // ONE engine per page, ever. React strict mode mounts effects twice in
@@ -110,11 +123,13 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       // the model slower than Aide speaks them, and without this the turn ends
       // at the first lull and the rest lands seconds later as a new utterance.
       engineRef.current?.beginReply();
+      let loggedOut = false;
       try {
         const result = await streamAgentReply(next, {
           onDelta: (full) => setMessages([...next, { role: "assistant", content: full }]),
           onSentence: (s) => engineRef.current?.queueSpeak(s),
         });
+        loggedOut = !!result.loggedOut;
 
         if (result.newUserId) {
           // A streaming response can't set cookies after it starts — sign the
@@ -143,6 +158,25 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         engineRef.current?.endReply();
         setThinking(false);
         thinkingRef.current = false;
+      }
+
+      if (loggedOut) {
+        // The stream couldn't clear cookies — do it now, drop the old
+        // identity's transcript, let Aide finish saying goodbye, then restart
+        // the page clean (fresh greeting, fresh nav, no leaked context).
+        await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+        clearSavedTranscript();
+        const engine = engineRef.current;
+        const started = Date.now();
+        await new Promise<void>((resolve) => {
+          const timer = setInterval(() => {
+            if (!engine || !engine.isSpeakingNow() || Date.now() - started > 20000) {
+              clearInterval(timer);
+              resolve();
+            }
+          }, 400);
+        });
+        window.location.assign("/");
       }
     },
     [router, speak],
@@ -198,26 +232,39 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
 
     if (!greetedThisLoad) {
       greetedThisLoad = true;
-      const previous = loadTranscript();
+      // Identity first, then transcript: the saved conversation is only
+      // restored for the SAME account that had it. Any other identity (fresh
+      // signup, login, switch, logout) starts clean with its own greeting —
+      // which is also what triggers new-account onboarding.
+      fetch("/api/account")
+        .then((r) => r.json())
+        .catch(() => null)
+        .then((d) => {
+          const id: string | null = d?.id ?? null;
+          setAccountId(id);
+          const saved = loadTranscript();
 
-      if (previous.length > 0) {
-        // Coming back to an existing conversation: restore it so the model
-        // still has the context, and say something short instead of running
-        // through the full introduction again.
-        setMessages(previous);
-        engine.speak("Welcome back. I still have our conversation — carry on.");
-      } else {
-        // Greet with real state: pending assessments, money to withdraw, jobs.
-        fetch("/api/greeting")
-          .then((res) => res.json())
-          .catch(() => null)
-          .then((data) => {
-            const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
-            const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key.`;
-            setMessages((m) => [...m, { role: "assistant", content: greeting }]);
-            engine.speak(greeting);
-          });
-      }
+          if (id && saved.owner === id && saved.messages.length > 0) {
+            // Coming back to an existing conversation: restore it so the model
+            // still has the context, and say something short instead of running
+            // through the full introduction again.
+            setMessages(saved.messages);
+            engine.speak("Welcome back. I still have our conversation — carry on.");
+            return;
+          }
+
+          clearSavedTranscript();
+          // Greet with real state: pending assessments, money to withdraw, jobs.
+          fetch("/api/greeting")
+            .then((res) => res.json())
+            .catch(() => null)
+            .then((data) => {
+              const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
+              const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key.`;
+              setMessages((m) => [...m, { role: "assistant", content: greeting }]);
+              engine.speak(greeting);
+            });
+        });
     }
 
     return () => {
@@ -246,26 +293,18 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   );
 
   // Keep the saved transcript in step with what's on screen, capped so a long
-  // session can't outgrow the storage quota.
+  // session can't outgrow the storage quota. Tagged with its owner so it is
+  // never restored for a different account. (The /api/account fetch that
+  // learns the id — and, server-side, starts the payment poller — happens in
+  // the greeting flow above.)
   useEffect(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0 || !accountId) return;
     try {
-      sessionStorage.setItem(TRANSCRIPT_KEY, JSON.stringify(messages.slice(-MAX_SAVED)));
+      sessionStorage.setItem(TRANSCRIPT_KEY, JSON.stringify({ owner: accountId, messages: messages.slice(-MAX_SAVED) }));
     } catch {
       /* private mode or quota — the conversation just won't survive a reload */
     }
-  }, [messages]);
-
-  // Learn this browser's account id on mount (and, server-side, start the local
-  // payment poller). The id drives the reactive event subscription.
-  useEffect(() => {
-    fetch("/api/account")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d?.id) setAccountId(d.id);
-      })
-      .catch(() => {});
-  }, []);
+  }, [messages, accountId]);
 
   const beginCapture = useCallback((onText: (t: string) => void) => {
     captureRef.current = onText;

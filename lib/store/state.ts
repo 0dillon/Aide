@@ -71,7 +71,27 @@ export type WithdrawalRecord = { accountId: string; amount: number; accountName:
 
 // A withdrawal armed but not yet executed. The user must speak `phrase` back
 // before the transfer runs — voice consent replacing a visual OTP.
-export type PendingWithdrawal = { amount: number; phrase: string; createdAt: number };
+export type PendingWithdrawal = {
+  amount: number;
+  phrase: string;
+  // "word": random confirm word (employers). "passphrase": the worker's own
+  // spoken security phrase, checked by hash.
+  mode?: "word" | "passphrase";
+  destAccount?: string;
+  destBankCode?: string;
+  destAccountName?: string;
+  createdAt: number;
+};
+
+// A saved withdrawal destination.
+export type Beneficiary = {
+  accountId: string;
+  accountName: string;
+  accountNumber: string;
+  bankCode: string;
+  bankName?: string;
+  at: number;
+};
 
 // One Monnify wallet (dedicated reserved NUBAN) per Aide account. The
 // accountReference is deterministic (aide-<accountId>) so the same real
@@ -89,6 +109,8 @@ export type Wallet = {
   payoutAccountName?: string;
   // When the payout destination was last changed (new-beneficiary hold).
   payoutSetAt?: number;
+  // Whether a spoken security phrase is set (the hash itself never leaves Convex).
+  hasSecurityPhrase?: boolean;
   pendingWithdrawal?: PendingWithdrawal;
   // Payment-event bookkeeping, per wallet: which inbound transactions have
   // already been announced, and whether history was seeded silently.

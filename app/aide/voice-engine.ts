@@ -170,6 +170,12 @@ export class VoiceEngine {
     this.stopAllSpeech();
   }
 
+  // True while anything is playing or queued — lets callers wait for Aide to
+  // finish a sentence before doing something disruptive (e.g. reload on logout).
+  isSpeakingNow(): boolean {
+    return !!(this.currentAudio || this.currentUtter) || this.queue.length > 0;
+  }
+
   // Public speak: interrupts whatever is queued and says this instead.
   speak(text: string): void {
     this.queue = [];

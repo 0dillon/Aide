@@ -47,11 +47,25 @@ export default defineSchema({
     payoutAccount: v.optional(v.string()),
     payoutBankCode: v.optional(v.string()),
     payoutAccountName: v.optional(v.string()),
-    // When the payout destination was last changed. A newly added destination
-    // is held before money may be sent to it — see COOLING_OFF in payments.ts.
     payoutSetAt: v.optional(v.number()),
+    // Worker's personal spoken security phrase (hash of the normalized text).
+    // Replaces SMS OTP, which a blind user cannot read: withdrawals from
+    // worker accounts are confirmed by speaking this phrase. Employers keep
+    // the per-withdrawal random confirm word instead.
+    securityPhraseHash: v.optional(v.string()),
     pendingWithdrawal: v.optional(
-      v.object({ amount: v.number(), phrase: v.string(), createdAt: v.number() }),
+      v.object({
+        amount: v.number(),
+        phrase: v.string(),
+        // "word": match the random word in `phrase` (employers).
+        // "passphrase": match the wallet's securityPhraseHash (workers).
+        mode: v.optional(v.union(v.literal("word"), v.literal("passphrase"))),
+        // Per-withdrawal destination — users are not locked to one account.
+        destAccount: v.optional(v.string()),
+        destBankCode: v.optional(v.string()),
+        destAccountName: v.optional(v.string()),
+        createdAt: v.number(),
+      }),
     ),
     // knownTxRefs is a Set in memory; Convex stores it as an array we treat as a set.
     knownTxRefs: v.array(v.string()),
@@ -63,6 +77,17 @@ export default defineSchema({
     amount: v.number(),
     accountName: v.string(),
     status: v.string(),
+    at: v.number(),
+  }).index("by_account", ["accountId"]),
+
+  // Saved withdrawal destinations ("beneficiaries"), per account. Offered for
+  // saving after a successful payment to a new account — voice or screen.
+  beneficiaries: defineTable({
+    accountId: v.string(),
+    accountName: v.string(),
+    accountNumber: v.string(),
+    bankCode: v.string(),
+    bankName: v.optional(v.string()),
     at: v.number(),
   }).index("by_account", ["accountId"]),
 

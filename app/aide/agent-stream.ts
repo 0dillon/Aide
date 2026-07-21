@@ -5,6 +5,7 @@
 export type Msg = { role: "user" | "assistant"; content: string };
 
 export type AgentStreamResult = {
+  loggedOut?: boolean;
   full: string;
   navigateTo?: string;
   newUserId?: string;
@@ -69,6 +70,7 @@ export async function streamAgentReply(messages: Msg[], handlers: AgentStreamHan
     } else if (ev.t === "done") {
       result.navigateTo = ev.navigateTo;
       result.newUserId = ev.newUserId;
+      result.loggedOut = ev.loggedOut;
     } else if (ev.t === "error") {
       throw new Error(ev.message || "Aide had a problem.");
     }

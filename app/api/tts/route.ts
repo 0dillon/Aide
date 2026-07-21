@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 
 export const runtime = "nodejs";
@@ -19,7 +19,17 @@ export const runtime = "nodejs";
 // en-NG-EzinneNeural (female) / en-NG-AbeoNeural (male) are the only two
 // Nigerian English neural voices in the catalog; override with EDGE_TTS_VOICE.
 const VOICE = process.env.EDGE_TTS_VOICE || "en-NG-EzinneNeural";
-const PYTHON_BIN = process.env.PYTHON_BIN || "python";
+// Debian/Ubuntu ship only `python3`; other setups only `python`. Probe once.
+const PYTHON_BIN =
+  process.env.PYTHON_BIN ||
+  ["python3", "python"].find((bin) => {
+    try {
+      return spawnSync(bin, ["--version"]).status === 0;
+    } catch {
+      return false;
+    }
+  }) ||
+  "python3";
 const WORKER_SCRIPT = path.join(process.cwd(), "scripts", "tts_worker.py");
 
 // Per-request deadline once the worker has a request in flight. Generous,

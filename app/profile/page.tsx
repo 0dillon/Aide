@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { useAide } from "../aide";
+import { clearSavedTranscript, useAide } from "../aide";
 
 type Job = { id: string; title: string; skill: string; pay: number; employer: string };
 type WorkerProfile = {
@@ -98,6 +98,16 @@ export default function ProfilePage() {
             className="min-h-12 rounded-lg bg-[var(--accent)] px-5 py-3 font-bold text-white"
           >
             Read profile aloud
+          </button>
+          <button
+            onClick={async () => {
+              await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+              clearSavedTranscript();
+              window.location.assign("/");
+            }}
+            className="min-h-12 rounded-lg border-2 border-[var(--alert)] px-5 py-3 font-bold text-[var(--alert)]"
+          >
+            Log out
           </button>
         </div>
       </div>

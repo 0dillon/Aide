@@ -34,6 +34,89 @@ async function postedJobs(): Promise<Job[]> {
   }
 }
 
+// Validated, normalized gig ready for postJob (minus employer, added by the
+// caller). The one place gig rules live, so the manual post route and Aide's
+// post_gig voice tool accept exactly the same gigs.
+export type ValidatedGig = {
+  title: string;
+  skill: string;
+  pay: number;
+  requiresAssessment: boolean;
+  assessmentType?: "oral" | "mcq";
+  assessmentQuestion?: string;
+  mcqQuestions?: McqQuestion[];
+  timeLimit?: number; // seconds
+  task?: string;
+};
+
+export function validateGig(input: {
+  title?: string;
+  skill?: string;
+  pay?: number;
+  requiresAssessment?: boolean;
+  assessmentType?: "oral" | "mcq";
+  assessmentQuestion?: string;
+  mcqQuestions?: McqQuestion[];
+  timeLimit?: number;
+  task?: string;
+}): { ok: true; gig: ValidatedGig } | { ok: false; message: string } {
+  if (!input.title?.trim()) return { ok: false, message: "A gig title is required." };
+  if (!input.skill?.trim()) return { ok: false, message: "A gig type or skill is required." };
+  const pay = Number(input.pay);
+  if (!Number.isFinite(pay) || pay <= 0) return { ok: false, message: "Pay must be a positive amount in Naira." };
+
+  let timeLimit: number | undefined;
+  if (input.timeLimit !== undefined) {
+    timeLimit = Number(input.timeLimit);
+    if (!Number.isInteger(timeLimit) || timeLimit <= 0 || timeLimit > 3600) {
+      return { ok: false, message: "Time limit must be a positive whole number of seconds up to 3600 (one hour)." };
+    }
+  }
+
+  let mcqQuestions: McqQuestion[] | undefined;
+  if (input.requiresAssessment && input.assessmentType === "mcq") {
+    const qs = input.mcqQuestions;
+    if (!Array.isArray(qs) || qs.length === 0) {
+      return { ok: false, message: "At least one question is required for multiple choice assessments." };
+    }
+    if (qs.length > 10) return { ok: false, message: "A maximum of 10 questions is allowed." };
+    for (let i = 0; i < qs.length; i++) {
+      const q = qs[i];
+      if (!q.question?.trim()) return { ok: false, message: `Question ${i + 1} has no text.` };
+      if (!Array.isArray(q.options) || q.options.length < 2 || q.options.length > 6) {
+        return { ok: false, message: `Question ${i + 1} must have between 2 and 6 options.` };
+      }
+      for (let j = 0; j < q.options.length; j++) {
+        if (!q.options[j]?.trim()) return { ok: false, message: `Question ${i + 1}, option ${j + 1} is empty.` };
+      }
+      const idx = Number(q.correctIndex);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= q.options.length) {
+        return { ok: false, message: `Question ${i + 1} must mark which option is correct.` };
+      }
+    }
+    mcqQuestions = qs.map((q) => ({
+      question: q.question.trim(),
+      options: q.options.map((o) => o.trim()),
+      correctIndex: Number(q.correctIndex),
+    }));
+  }
+
+  return {
+    ok: true,
+    gig: {
+      title: input.title,
+      skill: input.skill,
+      pay,
+      requiresAssessment: !!input.requiresAssessment,
+      assessmentType: input.requiresAssessment ? input.assessmentType : undefined,
+      assessmentQuestion: input.assessmentQuestion,
+      mcqQuestions,
+      timeLimit,
+      task: input.task,
+    },
+  };
+}
+
 // Post a new gig (employer flow — via the modal form or Aide's post_gig tool).
 export async function postJob(input: {
   title: string;

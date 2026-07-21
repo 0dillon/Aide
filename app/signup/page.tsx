@@ -1,8 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAide } from "../aide";
 
 // Screen signup. The fully voice-native path also exists: just tell Aide
 // "sign me up" and it collects name + role and calls create_account itself.
@@ -13,9 +11,6 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
-  const { speak } = useAide();
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!role) {
@@ -32,8 +27,11 @@ export default function SignupPage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not create the account.");
-      speak(`Welcome to Aide, ${data.name}. Your ${data.role} account is ready.`);
-      router.push("/profile");
+      // Full navigation, not router.push: the whole app must restart as the
+      // new identity — fresh transcript, fresh greeting (which offers the
+      // new-account onboarding), fresh nav auth state. The greeting speaks
+      // the welcome, so nothing needs to be said here.
+      window.location.assign("/");
     } catch (err) {
       setError((err as Error).message);
     } finally {

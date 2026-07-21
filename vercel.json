@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/speak.py": {
+      "maxDuration": 30
+    }
+  }
+}

@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "messages required" }, { status: 400 });
   }
 
-  const account = getAccount(userIdFrom(req));
+  const account = await getAccount(userIdFrom(req));
   const result = streamText({
     model: deepseek(MODEL),
     system: `${SYSTEM_PROMPT}\n- The current user is ${account.name}, signed in with a ${account.role} account.`,
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
           (t) => (t.toolName === "create_account" || t.toolName === "switch_account") && t.result?.userId,
         )?.result?.userId;
 
-        emit(controller, { t: "done", navigateTo, newUserId, state: snapshot(account.id) });
+        emit(controller, { t: "done", navigateTo, newUserId, state: await snapshot(account.id) });
       } catch (e) {
         emit(controller, { t: "error", message: (e as Error).message });
       }

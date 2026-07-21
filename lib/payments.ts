@@ -14,7 +14,7 @@ export async function registerPayout(
 ): Promise<{ ok: true; accountName: string } | { ok: false; message: string }> {
   try {
     const r = await validateBankAccount(accountNumber, bankCode);
-    store.setPayout(accountId, accountNumber, bankCode, r.accountName);
+    await store.setPayout(accountId, accountNumber, bankCode, r.accountName);
     return { ok: true, accountName: r.accountName };
   } catch (e) {
     return { ok: false, message: (e as Error).message };
@@ -27,7 +27,7 @@ export async function confirmWithdrawal(accountId: string, spokenPhrase: string)
   | { ok: true; status: string; pending: boolean; amount: number; message: string }
   | { ok: false; message: string }
 > {
-  const check = store.verifyWithdrawal(accountId, spokenPhrase);
+  const check = await store.verifyWithdrawal(accountId, spokenPhrase);
   if (!check.ok) return check;
   try {
     const r = await singleTransfer({
@@ -39,7 +39,7 @@ export async function confirmWithdrawal(accountId: string, spokenPhrase: string)
       destinationAccountName: check.accountName,
     });
     const pending = r.status === "PENDING_AUTHORIZATION";
-    store.recordWithdrawal(accountId, { amount: check.amount, accountName: check.accountName, status: r.status });
+    await store.recordWithdrawal(accountId, { amount: check.amount, accountName: check.accountName, status: r.status });
     return {
       ok: true,
       status: r.status,

@@ -17,15 +17,16 @@
   "dependencies": {
     "@ai-sdk/deepseek": "^0.2.16",
     "ai": "^4.3.0",
+    "convex": "^1.42.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "msedge-tts": "^2.0.7",
     "next": "^15.3.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.0",

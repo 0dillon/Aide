@@ -7,11 +7,11 @@ export const runtime = "nodejs";
 // switchable — real credentialed users log in with email and password, and
 // never appear in this list.
 export async function GET(req: Request) {
-  const current = getAccount(userIdFrom(req));
+  const current = await getAccount(userIdFrom(req));
   return Response.json({
     current: current.id,
     authenticated: !!current.passwordHash,
-    accounts: listAccounts()
+    accounts: (await listAccounts())
       .filter((a) => !a.passwordHash)
       .map((a) => ({ id: a.id, name: a.name, role: a.role })),
   });
@@ -19,8 +19,8 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   const { id } = (await req.json().catch(() => ({}))) as { id?: string };
-  if (!id || !hasAccount(id)) return Response.json({ error: "No account with that id." }, { status: 400 });
-  const acc = getAccount(id);
+  if (!id || !(await hasAccount(id))) return Response.json({ error: "No account with that id." }, { status: 400 });
+  const acc = await getAccount(id);
   if (acc.passwordHash) {
     return Response.json({ error: "That account requires logging in with email and password." }, { status: 403 });
   }

@@ -1,34 +1,62 @@
-import { attempts, JOBS, newId, worker, type Application, type Job, type McqQuestion } from "./state";
-import { assessmentPromptFor, getJob, publicJob } from "./jobs";
+import { api } from "../../convex/_generated/api";
+import { convexClient } from "../convex-server";
+import { JOBS, worker, type Application, type McqQuestion } from "./state";
+import { assessmentPromptFor, getJob, listJobs, publicJob } from "./jobs";
 import { getBalance, getWallet } from "./payments";
 
-export function apply(jobId: string): Application {
-  const existing = worker.applications.find((a) => a.jobId === jobId);
-  if (existing) return existing;
-  const app: Application = { id: newId(), jobId, status: "applied", verified: false };
-  worker.applications = [...worker.applications, app];
-  return app;
+// Applications live in Convex so the worker↔employer loop (apply → assessed →
+// hired/rejected/paid) is visible to both parties no matter which serverless
+// instance served either request. Applications belong to the demo worker, as
+// before — `worker.id` is the owning account.
+
+type AppDoc = { _id: string; accountId: string; jobId: string; status: Application["status"]; verified: boolean; assessmentResult?: string };
+
+function toApplication(d: AppDoc): Application {
+  return { id: d._id, jobId: d.jobId, status: d.status, verified: d.verified, assessmentResult: d.assessmentResult };
 }
 
-export function getApplications(): Application[] {
-  return worker.applications;
+const owner = () => worker.id;
+
+export async function apply(jobId: string): Promise<Application> {
+  const d = (await convexClient().mutation(api.applications.apply, { accountId: owner(), jobId })) as AppDoc;
+  return toApplication(d);
 }
 
-export function getApplication(jobId: string): Application | undefined {
-  return worker.applications.find((a) => a.jobId === jobId);
+export async function getApplications(): Promise<Application[]> {
+  const docs = (await convexClient().query(api.applications.listForAccount, { accountId: owner() })) as AppDoc[];
+  return docs.map(toApplication);
+}
+
+export async function getApplication(jobId: string): Promise<Application | undefined> {
+  const d = (await convexClient().query(api.applications.getForJob, { accountId: owner(), jobId })) as AppDoc | null;
+  return d ? toApplication(d) : undefined;
+}
+
+async function patch(
+  jobId: string,
+  fields: { status?: Application["status"]; verified?: boolean; assessmentResult?: string; requireStatus?: Application["status"]; requireUnverified?: boolean },
+): Promise<Application | undefined> {
+  const d = (await convexClient().mutation(api.applications.setStatus, { accountId: owner(), jobId, ...fields })) as AppDoc | null;
+  return d ? toApplication(d) : undefined;
 }
 
 // --- Assessment attempts and time limits ---
 
-export function recordAttempt(userId: string, jobId: string): number {
+const attemptKey = (userId: string, jobId: string) => `${userId}-${jobId}`;
+
+export async function recordAttempt(userId: string, jobId: string): Promise<number> {
   const now = Date.now();
-  attempts.set(`${userId}-${jobId}`, now);
+  await convexClient().mutation(api.jobs.recordAttempt, { key: attemptKey(userId, jobId), startedAt: now });
   return now;
 }
 
-export function checkTimeLimit(userId: string, jobId: string, timeLimit?: number): { expired: boolean; elapsed: number; limit: number } {
+export async function checkTimeLimit(
+  userId: string,
+  jobId: string,
+  timeLimit?: number,
+): Promise<{ expired: boolean; elapsed: number; limit: number }> {
   if (!timeLimit) return { expired: false, elapsed: 0, limit: 0 };
-  const startedAt = attempts.get(`${userId}-${jobId}`);
+  const startedAt = (await convexClient().query(api.jobs.getAttempt, { key: attemptKey(userId, jobId) })) as number | null;
   if (!startedAt) {
     // If no start record, be lenient for the demo but don't expire.
     return { expired: false, elapsed: 0, limit: timeLimit };
@@ -39,16 +67,16 @@ export function checkTimeLimit(userId: string, jobId: string, timeLimit?: number
   return { expired, elapsed, limit: timeLimit };
 }
 
-export function clearAttempt(userId: string, jobId: string) {
-  attempts.delete(`${userId}-${jobId}`);
+export async function clearAttempt(userId: string, jobId: string): Promise<void> {
+  await convexClient().mutation(api.jobs.clearAttempt, { key: attemptKey(userId, jobId) });
 }
 
 // How long the worker has left on a running, time-limited assessment — lets
 // Aide answer "how much time do I have?" truthfully instead of guessing.
-export function timeRemaining(userId: string, jobId: string): { limit: number; remaining: number } | null {
-  const job = getJob(jobId);
+export async function timeRemaining(userId: string, jobId: string): Promise<{ limit: number; remaining: number } | null> {
+  const job = await getJob(jobId);
   if (!job?.timeLimit) return null;
-  const startedAt = attempts.get(`${userId}-${jobId}`);
+  const startedAt = (await convexClient().query(api.jobs.getAttempt, { key: attemptKey(userId, jobId) })) as number | null;
   if (!startedAt) return null;
   const elapsed = Math.floor((Date.now() - startedAt) / 1000);
   return { limit: job.timeLimit, remaining: Math.max(0, job.timeLimit - elapsed) };
@@ -62,13 +90,13 @@ export type AssessmentStart =
   | { ok: true; jobId: string; assessmentType: "mcq"; questions: Omit<McqQuestion, "correctIndex">[]; timeLimit?: number; startedAt: number }
   | { ok: true; jobId: string; assessmentType: "oral"; prompt: string; timeLimit?: number; startedAt: number };
 
-export function startAssessment(userId: string, jobId: string): AssessmentStart {
-  const job = getJob(jobId);
+export async function startAssessment(userId: string, jobId: string): Promise<AssessmentStart> {
+  const job = await getJob(jobId);
   if (!job) return { ok: false, message: "No job with that id." };
-  if (getApplication(jobId)?.status === "cancelled") {
+  if ((await getApplication(jobId))?.status === "cancelled") {
     return { ok: false, message: "The worker cancelled this assessment earlier and cannot retake it or apply to this job again." };
   }
-  const startedAt = recordAttempt(userId, jobId);
+  const startedAt = await recordAttempt(userId, jobId);
   if ((job.assessmentType || "oral") === "mcq") {
     const questions = job.mcqQuestions?.map(({ question, options }) => ({ question, options })) || [];
     return { ok: true, jobId: job.id, assessmentType: "mcq", questions, timeLimit: job.timeLimit, startedAt };
@@ -78,50 +106,55 @@ export function startAssessment(userId: string, jobId: string): AssessmentStart 
 
 // The worker walked away from an assessment. This is deliberately one-way:
 // the application flips to "cancelled" and stays there, so the job can never
-// be re-applied to or the assessment retaken.
-export function cancelAssessment(userId: string, jobId: string): Application | undefined {
-  clearAttempt(userId, jobId);
-  const app = getApplication(jobId);
-  if (app && app.status === "applied" && !app.verified) {
-    app.status = "cancelled";
-    app.assessmentResult = "Assessment cancelled by worker";
-  }
-  return app;
+// be re-applied to or the assessment retaken. The guard is enforced inside the
+// Convex mutation, so a concurrent grade-pass can't race it.
+export async function cancelAssessment(userId: string, jobId: string): Promise<Application | undefined> {
+  await clearAttempt(userId, jobId);
+  return patch(jobId, {
+    status: "cancelled",
+    assessmentResult: "Assessment cancelled by worker",
+    requireStatus: "applied",
+    requireUnverified: true,
+  });
 }
 
 // --- Grading ---
 
 export async function gradeOralAssessment(userId: string, jobId: string, answer: string): Promise<{ verified: boolean; message: string }> {
-  const job = getJob(jobId);
+  const job = await getJob(jobId);
   if (!job) return { verified: false, message: "Job not found." };
 
-  const timeCheck = checkTimeLimit(userId, jobId, job.timeLimit);
+  const timeCheck = await checkTimeLimit(userId, jobId, job.timeLimit);
   if (timeCheck.expired) {
-    clearAttempt(userId, jobId);
+    await clearAttempt(userId, jobId);
     return { verified: false, message: `Time limit exceeded. You took ${timeCheck.elapsed} seconds, but the limit was ${timeCheck.limit} seconds.` };
   }
 
-  clearAttempt(userId, jobId);
+  await clearAttempt(userId, jobId);
   // Rubric grading by the model (fair, unbiased, no answer reveals); falls
   // back to a length heuristic when no model is available.
   const { gradeOral } = await import("../grading");
   const result = await gradeOral(job, answer);
-  if (result.verified) markVerified(jobId);
-  recordAssessmentResult(jobId, result.verified ? "Oral assessment: passed" : "Oral assessment: not passed");
+  if (result.verified) await markVerified(jobId);
+  await recordAssessmentResult(jobId, result.verified ? "Oral assessment: passed" : "Oral assessment: not passed");
   return result;
 }
 
-export function gradeMcqAssessment(userId: string, jobId: string, answers: number[]): { verified: boolean; score: number; total: number; message: string } {
-  const job = getJob(jobId);
+export async function gradeMcqAssessment(
+  userId: string,
+  jobId: string,
+  answers: number[],
+): Promise<{ verified: boolean; score: number; total: number; message: string }> {
+  const job = await getJob(jobId);
   if (!job) return { verified: false, score: 0, total: 0, message: "Job not found." };
 
-  const timeCheck = checkTimeLimit(userId, jobId, job.timeLimit);
+  const timeCheck = await checkTimeLimit(userId, jobId, job.timeLimit);
   if (timeCheck.expired) {
-    clearAttempt(userId, jobId);
+    await clearAttempt(userId, jobId);
     return { verified: false, score: 0, total: 0, message: `Time limit exceeded. You took ${timeCheck.elapsed} seconds, but the limit was ${timeCheck.limit} seconds.` };
   }
 
-  clearAttempt(userId, jobId);
+  await clearAttempt(userId, jobId);
   const questions = job.mcqQuestions || [];
   if (questions.length === 0) {
     return { verified: false, score: 0, total: 0, message: "This job does not have MCQ questions." };
@@ -135,8 +168,8 @@ export function gradeMcqAssessment(userId: string, jobId: string, answers: numbe
   const scorePct = (correctCount / questions.length) * 100;
   const passed = scorePct >= 70;
 
-  if (passed) markVerified(jobId);
-  recordAssessmentResult(jobId, `MCQ: ${correctCount} of ${questions.length} (${Math.round(scorePct)}%)`);
+  if (passed) await markVerified(jobId);
+  await recordAssessmentResult(jobId, `MCQ: ${correctCount} of ${questions.length} (${Math.round(scorePct)}%)`);
   return {
     verified: passed,
     score: correctCount,
@@ -149,38 +182,15 @@ export function gradeMcqAssessment(userId: string, jobId: string, answers: numbe
 
 // --- Status transitions ---
 
-export function markVerified(jobId: string): Application | undefined {
-  const app = getApplication(jobId);
-  if (app) {
-    app.verified = true;
-    app.status = "assessed";
-  }
-  return app;
-}
-
-export function hireWorker(jobId: string): Application | undefined {
-  const app = getApplication(jobId);
-  if (app) app.status = "hired";
-  return app;
-}
-
-export function rejectWorker(jobId: string): Application | undefined {
-  const app = getApplication(jobId);
-  if (app) app.status = "rejected";
-  return app;
-}
-
-export function payWorker(jobId: string): Application | undefined {
-  const app = getApplication(jobId);
-  if (app) app.status = "paid";
-  return app;
-}
+export const markVerified = (jobId: string) => patch(jobId, { verified: true, status: "assessed" });
+export const hireWorker = (jobId: string) => patch(jobId, { status: "hired" });
+export const rejectWorker = (jobId: string) => patch(jobId, { status: "rejected" });
+export const payWorker = (jobId: string) => patch(jobId, { status: "paid" });
 
 // Attach a readable assessment outcome to the application so the employer
 // can see how the applicant actually did.
-export function recordAssessmentResult(jobId: string, text: string): void {
-  const app = getApplication(jobId);
-  if (app) app.assessmentResult = text;
+export async function recordAssessmentResult(jobId: string, text: string): Promise<void> {
+  await patch(jobId, { assessmentResult: text });
 }
 
 // Payment truth: a gig may only be marked paid when confirmed inbound money
@@ -188,14 +198,15 @@ export function recordAssessmentResult(jobId: string, text: string): void {
 // other paid gigs. The button obeys the same rule as the model: never state
 // a payment that didn't verifiably happen.
 export async function verifyPaymentCoverage(jobId: string): Promise<{ ok: boolean; message: string }> {
-  const job = getJob(jobId);
+  const job = await getJob(jobId);
   if (!job) return { ok: false, message: "No job with that id." };
   // Applications belong to the demo worker, so coverage is checked against
   // that worker's own wallet — inbound pay must land in THEIR account.
   const { balance } = await getBalance(worker.id);
-  const alreadyClaimed = worker.applications
-    .filter((a) => a.status === "paid")
-    .reduce((s, a) => s + (getJob(a.jobId)?.pay ?? 0), 0);
+  const apps = await getApplications();
+  const paid = apps.filter((a) => a.status === "paid");
+  let alreadyClaimed = 0;
+  for (const a of paid) alreadyClaimed += (await getJob(a.jobId))?.pay ?? 0;
   if (balance >= alreadyClaimed + job.pay) return { ok: true, message: "Confirmed payment covers this gig." };
   const short = alreadyClaimed + job.pay - balance;
   return {
@@ -206,17 +217,19 @@ export async function verifyPaymentCoverage(jobId: string): Promise<{ ok: boolea
 
 // Everything the browser may know, sanitized: this snapshot travels to the
 // client with every agent reply, so MCQ correct answers must never be in it.
-export function snapshot(accountId: string) {
-  const wallet = getWallet(accountId);
+export async function snapshot(accountId: string) {
+  const [wallet, apps, jobs] = await Promise.all([getWallet(accountId), getApplications(), listJobs()]);
+  const applications = [];
+  for (const a of apps) {
+    const job = await getJob(a.jobId);
+    applications.push({ ...a, job: job ? publicJob(job) : undefined });
+  }
   return {
     accountNumber: wallet.accountNumber,
     bankName: wallet.bankName,
     payoutAccountName: wallet.payoutAccountName,
     awaitingWithdrawalConfirmation: wallet.pendingWithdrawal ? { amount: wallet.pendingWithdrawal.amount } : undefined,
-    applications: worker.applications.map((a) => {
-      const job = getJob(a.jobId);
-      return { ...a, job: job ? publicJob(job) : undefined };
-    }),
-    jobs: JOBS.map(publicJob),
+    applications,
+    jobs: jobs.map(publicJob),
   };
 }

@@ -103,7 +103,7 @@ export default function AidePage() {
         </button>
 
         <p aria-live="polite" className="min-h-6 text-lg font-bold text-[var(--ink-soft)]">
-          {speaking ? "Aide is speaking — tap the circle to interrupt" : thinking ? "Aide is thinking" : listening ? "Aide is listening — just talk" : ""}
+          {speaking ? "Aide is speaking — tap anywhere to stop" : thinking ? "Aide is thinking" : listening ? "Aide is listening — just talk" : ""}
         </p>
 
         <div className="min-h-16 max-w-lg text-center">
@@ -119,6 +119,7 @@ export default function AidePage() {
           </p>
         )}
         {error && <p className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
+        {micStatus && <p className="max-w-md text-center text-sm text-[var(--ink-soft)]">Mic: {micStatus}</p>}
 
         <MicMeter />
 

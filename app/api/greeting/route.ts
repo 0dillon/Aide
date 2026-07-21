@@ -10,11 +10,11 @@ export const runtime = "nodejs";
 export async function GET(req: Request) {
   const hour = new Date().getHours();
   const hello = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const acc = getAccount(userIdFrom(req));
+  const acc = await getAccount(userIdFrom(req));
 
   if (acc.role === "employer") {
-    const posted = listJobs().filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
-    const apps = getApplications().filter((a) => posted.some((j) => j.id === a.jobId));
+    const posted = (await listJobs()).filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
+    const apps = (await getApplications()).filter((a) => posted.some((j) => j.id === a.jobId));
     const readyToHire = apps.filter((a) => a.status === "assessed");
     const parts = [`${hello} ${acc.name}, I'm Aide. I'm listening — just talk to me.`];
     parts.push(
@@ -46,10 +46,13 @@ export async function GET(req: Request) {
     /* greet without the money line */
   }
 
-  const apps = getApplications();
-  const awaitingAssessment = apps.filter((a) => a.status === "applied" && !a.verified && getJob(a.jobId)?.requiresAssessment);
+  const apps = await getApplications();
+  const pendingChecks = await Promise.all(
+    apps.map(async (a) => a.status === "applied" && !a.verified && !!(await getJob(a.jobId))?.requiresAssessment),
+  );
+  const awaitingAssessment = apps.filter((_, i) => pendingChecks[i]);
 
-  const wallet = getWallet(acc.id);
+  const wallet = await getWallet(acc.id);
   if (wallet.pendingWithdrawal) {
     parts.push(`You have a withdrawal of ${wallet.pendingWithdrawal.amount} naira waiting for your spoken confirmation.`);
   }
@@ -70,7 +73,7 @@ export async function GET(req: Request) {
       "Your profile is still empty. Would you like to set it up now? I can write down your skills and a short bio just from talking with you, and use them to match you with the right jobs. Just say yes and we'll do it together.",
     );
   } else if (apps.length === 0) {
-    parts.push(`There are ${listJobs().length} jobs available right now — ask me to find you work.`);
+    parts.push(`There are ${(await listJobs()).length} jobs available right now — ask me to find you work.`);
   }
   parts.push("What would you like to do?");
 

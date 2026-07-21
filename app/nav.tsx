@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/jobs", label: "Jobs" },
   { href: "/payments", label: "Payments" },
   { href: "/profile", label: "Profile" },
+  { href: "/about", label: "About" },
 ];
 
 // Active page is marked three ways — aria-current, inverted colors, and an
@@ -16,9 +17,13 @@ const LINKS = [
 export function Nav() {
   const pathname = usePathname();
   return (
-    <div className="flex items-center gap-3">
-      <nav aria-label="Main">
-        <ul className="flex gap-2">
+    // One row on every screen. The links scroll horizontally within their own
+    // strip if they don't fit, which keeps navigation off the vertical budget —
+    // on a phone the wrapped version was eating a fifth of the viewport before
+    // the user reached Aide itself.
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-2 sm:justify-end sm:gap-3">
+      <nav aria-label="Main" className="min-w-0 flex-1 sm:flex-none">
+        <ul className="flex gap-1 overflow-x-auto sm:gap-2">
           {LINKS.map((l) => {
             const active = pathname === l.href;
             return (
@@ -26,7 +31,7 @@ export function Nav() {
                 <Link
                   href={l.href}
                   aria-current={active ? "page" : undefined}
-                  className={`inline-flex min-h-12 items-center rounded-lg px-4 text-lg font-bold ${
+                  className={`inline-flex min-h-12 shrink-0 items-center rounded-lg px-2.5 text-base font-bold sm:px-4 sm:text-lg ${
                     active
                       ? "bg-[var(--ink)] text-[var(--paper)] underline underline-offset-4"
                       : "text-[var(--ink)] hover:underline hover:underline-offset-4"
@@ -93,7 +98,11 @@ function AccountSwitcher() {
 
   if (accounts.length === 0) return null;
   return (
-    <div className="flex items-center gap-2">
+    // Hidden on phones: 412px can't hold five nav links plus a select and a
+    // login link without clipping words. Switching accounts is a demo
+    // affordance, and on the primary surface it is done by voice anyway —
+    // "switch to my employer account".
+    <div className="hidden shrink-0 items-center gap-1 sm:flex sm:gap-2">
       <label htmlFor="account-switcher" className="sr-only">
         Switch demo account
       </label>
@@ -101,7 +110,7 @@ function AccountSwitcher() {
         id="account-switcher"
         value={current}
         onChange={(e) => switchTo(e.target.value)}
-        className="min-h-12 max-w-48 rounded-lg border-2 border-[var(--line)] bg-white px-2 py-1 font-bold text-[var(--ink)]"
+        className="min-h-12 w-16 min-w-0 rounded-lg border-2 border-[var(--line)] bg-white px-1 py-1 text-xs font-bold text-[var(--ink)] sm:w-auto sm:max-w-48 sm:px-2 sm:text-base"
       >
         {accounts.map((a) => (
           <option key={a.id} value={a.id}>
@@ -109,7 +118,10 @@ function AccountSwitcher() {
           </option>
         ))}
       </select>
-      <Link href="/login" className="min-h-12 inline-flex items-center rounded-lg px-3 font-bold text-[var(--accent)] underline underline-offset-2">
+      <Link
+        href="/login"
+        className="inline-flex min-h-12 shrink-0 items-center rounded-lg px-1.5 text-sm font-bold text-[var(--accent)] underline underline-offset-2 sm:px-3 sm:text-base"
+      >
         Log in
       </Link>
     </div>

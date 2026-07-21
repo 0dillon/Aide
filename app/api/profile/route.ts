@@ -7,11 +7,11 @@ export const runtime = "nodejs";
 // a worker completes gigs (verified assessments); an employer has gigs
 // completed FOR them on jobs they posted.
 export async function GET(req: Request) {
-  const acc = getAccount(userIdFrom(req));
+  const acc = await getAccount(userIdFrom(req));
 
   if (acc.role === "employer") {
-    const posted = listJobs().filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
-    const apps = getApplications();
+    const posted = (await listJobs()).filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
+    const apps = await getApplications();
     const completed = posted.filter((j) => apps.some((a) => a.jobId === j.id && a.verified));
     return Response.json({
       account: publicAccount(acc),
@@ -31,7 +31,9 @@ export async function GET(req: Request) {
     balance = b.balance;
     wallet = b;
   } catch {}
-  const applications = getApplications().map((a) => ({ ...a, job: getJob(a.jobId) }));
+  const applications = await Promise.all(
+    (await getApplications()).map(async (a) => ({ ...a, job: await getJob(a.jobId) })),
+  );
   const verified = applications.filter((a) => a.verified);
   return Response.json({
     account: publicAccount(acc),
@@ -56,6 +58,6 @@ export async function POST(req: Request) {
     skills?: string[];
     bio?: string;
   };
-  const result = updateProfile(userId, body);
+  const result = await updateProfile(userId, body);
   return Response.json({ ok: true, ...result });
 }

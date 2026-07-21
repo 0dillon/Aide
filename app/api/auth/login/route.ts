@@ -11,7 +11,7 @@ export async function POST(req: Request) {
   if (!email?.trim() || !password) {
     return Response.json({ error: "Email and password are required." }, { status: 400 });
   }
-  const acc = findAccountByEmail(email);
+  const acc = await findAccountByEmail(email);
   if (!acc?.passwordHash || !verifyPassword(password, acc.passwordHash)) {
     return Response.json({ error: "Invalid email or password." }, { status: 401 });
   }

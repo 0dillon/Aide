@@ -26,3 +26,4 @@ Thumbs.db
 tts-env/
 venv/
 .venv/
+.vercel

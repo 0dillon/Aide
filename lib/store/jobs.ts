@@ -1,7 +1,41 @@
-import { JOBS, newId, state, type ExternalApplication, type ExternalJob, type Job, type McqQuestion } from "./state";
+import { api } from "../../convex/_generated/api";
+import { convexClient } from "../convex-server";
+import { JOBS, newId, type ExternalApplication, type ExternalJob, type Job, type McqQuestion } from "./state";
+
+// Jobs come from two places: the four seeded demo gigs (static, in code — they
+// never change) and gigs employers post at runtime, which live in Convex so
+// they're visible across serverless instances instead of only on whichever
+// instance happened to handle the POST.
+
+type PostedJobDoc = Omit<Job, "id"> & { jobId: string; at: number };
+
+function toJob(d: PostedJobDoc): Job {
+  return {
+    id: d.jobId,
+    title: d.title,
+    task: d.task,
+    skill: d.skill,
+    pay: d.pay,
+    employer: d.employer,
+    requiresAssessment: d.requiresAssessment,
+    assessmentType: d.assessmentType,
+    assessmentQuestion: d.assessmentQuestion,
+    mcqQuestions: d.mcqQuestions,
+    timeLimit: d.timeLimit,
+  };
+}
+
+async function postedJobs(): Promise<Job[]> {
+  try {
+    const docs = (await convexClient().query(api.jobs.listPosted, {})) as PostedJobDoc[];
+    return docs.map(toJob);
+  } catch {
+    return []; // Convex unreachable — still show the seeded gigs
+  }
+}
 
 // Post a new gig (employer flow — via the modal form or Aide's post_gig tool).
-export function postJob(input: {
+export async function postJob(input: {
   title: string;
   skill: string;
   pay: number;
@@ -12,7 +46,7 @@ export function postJob(input: {
   mcqQuestions?: McqQuestion[];
   timeLimit?: number; // in seconds
   task?: string;
-}): Job {
+}): Promise<Job> {
   const job: Job = {
     id: `g-${newId(6)}`,
     title: input.title.trim(),
@@ -26,18 +60,33 @@ export function postJob(input: {
     mcqQuestions: input.mcqQuestions,
     timeLimit: input.timeLimit,
   };
-  JOBS.push(job);
+  await convexClient().mutation(api.jobs.post, {
+    jobId: job.id,
+    title: job.title,
+    task: job.task,
+    skill: job.skill,
+    pay: job.pay,
+    employer: job.employer,
+    requiresAssessment: job.requiresAssessment,
+    assessmentType: job.assessmentType,
+    assessmentQuestion: job.assessmentQuestion,
+    mcqQuestions: job.mcqQuestions,
+    timeLimit: job.timeLimit,
+  });
   return job;
 }
 
-export function listJobs(skill?: string): Job[] {
-  if (!skill) return JOBS;
+export async function listJobs(skill?: string): Promise<Job[]> {
+  const all = [...JOBS, ...(await postedJobs())];
+  if (!skill) return all;
   const q = skill.toLowerCase();
-  return JOBS.filter((j) => j.skill.includes(q) || j.title.toLowerCase().includes(q));
+  return all.filter((j) => j.skill.includes(q) || j.title.toLowerCase().includes(q));
 }
 
-export function getJob(id: string): Job | undefined {
-  return JOBS.find((j) => j.id === id);
+export async function getJob(id: string): Promise<Job | undefined> {
+  const seeded = JOBS.find((j) => j.id === id);
+  if (seeded) return seeded;
+  return (await postedJobs()).find((j) => j.id === id);
 }
 
 // The spoken-assessment question: the employer's own wording when they gave
@@ -60,33 +109,39 @@ export function publicJob(job: Job): Omit<Job, "mcqQuestions"> & { mcqQuestions?
 
 // --- External listings Aide found on the open web ---
 
-export function setExternalJobs(jobs: ExternalJob[]): void {
-  state.externalJobs = jobs;
+type ExternalJobDoc = { extId: string; title: string; company: string; url: string; skill: string; source: string };
+type ExternalAppDoc = Omit<ExternalApplication, "id"> & { _id: string };
+
+export async function setExternalJobs(accountId: string, jobs: ExternalJob[]): Promise<void> {
+  await convexClient().mutation(api.jobs.setExternalJobs, {
+    accountId,
+    jobs: jobs.map((j) => ({ extId: j.id, title: j.title, company: j.company, url: j.url, skill: j.skill, source: j.source })),
+  });
 }
 
-export function getExternalJobs(): ExternalJob[] {
-  return state.externalJobs!;
+export async function getExternalJobs(accountId: string): Promise<ExternalJob[]> {
+  const docs = (await convexClient().query(api.jobs.listExternalJobs, { accountId })) as ExternalJobDoc[];
+  return docs.map((d) => ({ id: d.extId, title: d.title, company: d.company, url: d.url, skill: d.skill, source: d.source }));
 }
 
-export function getExternalApplications(): ExternalApplication[] {
-  return [...state.externalApps!].sort((a, b) => b.at - a.at);
+export async function getExternalApplications(accountId: string): Promise<ExternalApplication[]> {
+  const docs = (await convexClient().query(api.jobs.listExternalApps, { accountId })) as ExternalAppDoc[];
+  return docs.map((d) => ({
+    id: d._id,
+    externalJobId: d.externalJobId,
+    title: d.title,
+    company: d.company,
+    url: d.url,
+    status: "tracked",
+    at: d.at,
+  }));
 }
 
 // Record that the worker applied to an external listing so Aide can track it.
-export function trackExternalJob(externalJobId: string): ExternalApplication | undefined {
-  const job = state.externalJobs!.find((j) => j.id === externalJobId);
-  if (!job) return undefined;
-  const existing = state.externalApps!.find((a) => a.externalJobId === externalJobId);
-  if (existing) return existing;
-  const app: ExternalApplication = {
-    id: newId(),
-    externalJobId,
-    title: job.title,
-    company: job.company,
-    url: job.url,
-    status: "tracked",
-    at: Date.now(),
-  };
-  state.externalApps!.push(app);
-  return app;
+export async function trackExternalJob(accountId: string, externalJobId: string): Promise<ExternalApplication | undefined> {
+  const d = (await convexClient().mutation(api.jobs.trackExternal, { accountId, externalJobId })) as
+    | ExternalAppDoc
+    | null;
+  if (!d) return undefined;
+  return { id: d._id, externalJobId: d.externalJobId, title: d.title, company: d.company, url: d.url, status: "tracked", at: d.at };
 }

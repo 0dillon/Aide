@@ -18,18 +18,18 @@ export async function POST(req: Request) {
   };
 
   const { jobId, answer, answers, action } = body;
-  const job = jobId ? getJob(jobId) : undefined;
+  const job = jobId ? await getJob(jobId) : undefined;
   if (!job) return Response.json({ error: "No job with that id." }, { status: 400 });
 
   // Cancellation: one-way lockout.
   if (action === "cancel") {
-    cancelAssessment(userId, job.id);
+    await cancelAssessment(userId, job.id);
     return Response.json({ ok: true, cancelled: true });
   }
 
   // MCQ Grading
   if (answers !== undefined && Array.isArray(answers)) {
-    return Response.json({ ok: true, ...gradeMcqAssessment(userId, job.id, answers) });
+    return Response.json({ ok: true, ...(await gradeMcqAssessment(userId, job.id, answers)) });
   }
 
   // Oral Grading
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
 
   // Start Assessment — shared with the voice agent's start_assessment tool,
   // so the cancel lockout and attempt bookkeeping live in one place.
-  const started = startAssessment(userId, job.id);
+  const started = await startAssessment(userId, job.id);
   if (!started.ok) {
     return Response.json({ error: started.message }, { status: 403 });
   }

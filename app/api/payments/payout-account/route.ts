@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 // Validate (name enquiry) and save the signed-in user's withdrawal destination.
 export async function POST(req: Request) {
-  const acc = getAccount(userIdFrom(req));
+  const acc = await getAccount(userIdFrom(req));
   const { accountNumber, bankCode } = (await req.json().catch(() => ({}))) as {
     accountNumber?: string;
     bankCode?: string;

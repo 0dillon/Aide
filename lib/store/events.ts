@@ -1,73 +1,59 @@
 import { getReservedAccountTransactions } from "../monnify";
-import { state, type AideEvent, type Subscriber } from "./state";
-import { cacheWalletBalance, getWallet, listActiveWallets } from "./payments";
+import { state, type AideEvent } from "./state";
+import { cacheWalletBalance, listActiveWallets } from "./payments";
+import { publishConvexEvent } from "../convex-server";
 
-// Live events: confirmed payments pushed to the browser so Aide can announce
-// money the moment it lands, unprompted — scoped to the wallet that was paid,
-// so one user's alert never plays in another user's ears. The Monnify webhook
-// route publishes instantly when Monnify can reach the server; the poller
-// below is the fallback that makes local demos work without a public tunnel.
+// Live events: confirmed payments announced the moment they land, unprompted.
+// The reactive fan-out lives in Convex (see convex/events.ts) — writing an
+// event row there reaches every subscribed browser, across serverless
+// instances. This module is the Node-side WRITER: the webhook and the local
+// poller both call publishEvent, which forwards to Convex.
 
-const subscribers = state.subscribersByAccount!;
-
-// Deliver an event to one account's listeners; payment events are deduped
-// per wallet by transaction reference.
-export function publishEvent(accountId: string, e: AideEvent): void {
-  if (e.type === "payment") {
-    const w = getWallet(accountId);
-    if (w.knownTxRefs.has(e.reference)) return; // already announced
-    w.knownTxRefs.add(e.reference);
-  }
-  for (const fn of subscribers.get(accountId) ?? []) {
-    try {
-      fn(e);
-    } catch {}
-  }
-}
-
-export function subscribeEvents(accountId: string, fn: Subscriber): () => void {
-  let set = subscribers.get(accountId);
-  if (!set) {
-    set = new Set();
-    subscribers.set(accountId, set);
-  }
-  set.add(fn);
-  ensurePolling();
-  return () => {
-    set!.delete(fn);
-    if (set!.size === 0) subscribers.delete(accountId);
-  };
+// Push a confirmed event to the account's reactive Convex feed. `at` carries the
+// real transaction time so the browser's mount-time cutoff excludes history;
+// payments are deduped in Convex by (accountId, reference), so webhook + poller
+// redelivery announces the money only once.
+export function publishEvent(accountId: string, e: AideEvent, at?: number): void {
+  void publishConvexEvent(accountId, e, at);
 }
 
 let pollBusy = false;
-function ensurePolling(): void {
+
+// The poller is the fallback that makes LOCAL demos work without a public
+// tunnel Monnify can reach (in production the webhook is the real path, and a
+// serverless setInterval wouldn't survive anyway). It polls every active wallet
+// and publishes confirmed payments into Convex, tagged with their real time so
+// only genuinely new money is announced.
+export function ensurePolling(): void {
   if (state.pollTimer) return;
   state.pollTimer = setInterval(async () => {
-    if (subscribers.size === 0 || pollBusy) return;
+    if (pollBusy) return;
+    let watched;
+    try {
+      watched = await listActiveWallets();
+    } catch {
+      return; // Convex unreachable this tick — try again next time
+    }
+    if (watched.length === 0) return;
     pollBusy = true;
     try {
-      // Only wallets someone is actually listening to, and only active ones.
-      const watched = listActiveWallets().filter((w) => subscribers.has(w.accountId));
       for (const wallet of watched) {
         try {
           const { content } = await getReservedAccountTransactions(wallet.accountReference);
           const paid = content.filter((t) => t.paymentStatus === "PAID");
-          cacheWalletBalance(wallet.accountId, paid.reduce((s, t) => s + t.amount, 0));
-          if (!wallet.txSeeded) {
-            // First look at this wallet: remember history without announcing it as news.
-            for (const t of content) wallet.knownTxRefs.add(t.transactionReference);
-            wallet.txSeeded = true;
-            continue;
-          }
+          await cacheWalletBalance(wallet.accountId, paid.reduce((s, t) => s + t.amount, 0));
           for (const t of paid) {
-            if (!wallet.knownTxRefs.has(t.transactionReference)) {
-              publishEvent(wallet.accountId, {
+            const parsed = typeof t.createdOn === "number" ? t.createdOn : t.createdOn ? Date.parse(t.createdOn) : Date.now();
+            publishEvent(
+              wallet.accountId,
+              {
                 type: "payment",
                 amount: t.amountPaid ?? t.amount,
                 from: t.customerDTO?.name ?? "a bank transfer",
                 reference: t.transactionReference,
-              });
-            }
+              },
+              Number.isNaN(parsed) ? Date.now() : parsed,
+            );
           }
         } catch {
           /* transient — next tick retries this wallet */

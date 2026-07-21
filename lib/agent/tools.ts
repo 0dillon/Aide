@@ -35,7 +35,7 @@ export function makeTools(account: Account) {
         requiresAssessment: z.boolean().optional().describe("true = only jobs with an assessment, false = only without"),
       }),
       execute: async ({ keyword, minPay, maxPay, requiresAssessment }) => {
-        const filtered = store.listJobs().filter((j) => {
+        const filtered = (await store.listJobs()).filter((j) => {
           const kw = keyword?.trim().toLowerCase();
           if (kw && !j.title.toLowerCase().includes(kw) && !j.skill.toLowerCase().includes(kw)) return false;
           if (minPay !== undefined && j.pay < minPay) return false;
@@ -59,7 +59,7 @@ export function makeTools(account: Account) {
         role: z.enum(["worker", "employer"]),
       }),
       execute: async ({ name, role }) => {
-        const acc = store.createAccount(name, role);
+        const acc = await store.createAccount(name, role);
         // Every new account gets its own Monnify wallet, minted in the
         // background so voice signup never waits on the payment rail.
         store.provisionWalletInBackground(acc.id);
@@ -75,7 +75,7 @@ export function makeTools(account: Account) {
         const q = query.trim().toLowerCase();
         // Voice switching covers only passwordless demo identities — real
         // credentialed accounts require typing a password on the login page.
-        const all = store.listAccounts().filter((a) => !a.passwordHash);
+        const all = (await store.listAccounts()).filter((a) => !a.passwordHash);
         const matches = all.filter(
           (a) => a.name.toLowerCase().includes(q) || a.role === q || a.id === query.trim(),
         );
@@ -103,7 +103,7 @@ export function makeTools(account: Account) {
           return { ok: false, message: "Only employer accounts can post gigs. Offer to create an employer account first." };
         }
         if (!Number.isFinite(pay) || pay <= 0) return { ok: false, message: "Pay must be a positive amount in Naira." };
-        const job = store.postJob({ title, skill, pay, employer: account.name, requiresAssessment, assessmentQuestion });
+        const job = await store.postJob({ title, skill, pay, employer: account.name, requiresAssessment, assessmentQuestion });
         return { ok: true, jobId: job.id, title: job.title, pay: job.pay, requiresAssessment: job.requiresAssessment };
       },
     }),
@@ -114,21 +114,24 @@ export function makeTools(account: Account) {
       parameters: z.object({}),
       execute: async () => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can review applicants." };
-        const jobs = store.listJobs().filter((j) => j.employer.toLowerCase() === account.name.toLowerCase());
-        const w = store.getWorker();
-        const applications = store
-          .getApplications()
-          .filter((a) => jobs.some((j) => j.id === a.jobId))
-          .map((a) => ({
-            jobId: a.jobId,
-            gig: store.getJob(a.jobId)?.title,
-            worker: w.name,
-            status: a.status,
-            skillVerified: a.verified,
-            assessmentResult: a.assessmentResult,
-            workerSkills: w.skills ?? [],
-            workerBio: w.bio ?? "",
-          }));
+        const jobs = (await store.listJobs()).filter((j) => j.employer.toLowerCase() === account.name.toLowerCase());
+        // Applicant details from the worker's Convex account (shared), not the
+        // per-instance in-memory copy.
+        const w = await store.getAccount(store.getWorker().id);
+        const applications = await Promise.all(
+          (await store.getApplications())
+            .filter((a) => jobs.some((j) => j.id === a.jobId))
+            .map(async (a) => ({
+              jobId: a.jobId,
+              gig: (await store.getJob(a.jobId))?.title,
+              worker: w.name,
+              status: a.status,
+              skillVerified: a.verified,
+              assessmentResult: a.assessmentResult,
+              workerSkills: w.skills ?? [],
+              workerBio: w.bio ?? "",
+            })),
+        );
         return { ok: true, applications };
       },
     }),
@@ -139,11 +142,11 @@ export function makeTools(account: Account) {
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can hire." };
-        const job = store.getJob(jobId);
+        const job = await store.getJob(jobId);
         if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
           return { ok: false, message: "That gig is not one of this employer's postings." };
         }
-        const app = store.hireWorker(jobId);
+        const app = await store.hireWorker(jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
         return { ok: true, status: app.status, gig: job.title };
       },
@@ -155,11 +158,11 @@ export function makeTools(account: Account) {
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can reject applicants." };
-        const job = store.getJob(jobId);
+        const job = await store.getJob(jobId);
         if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
           return { ok: false, message: "That gig is not one of this employer's postings." };
         }
-        const app = store.rejectWorker(jobId);
+        const app = await store.rejectWorker(jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
         store.publishEvent(store.getWorker().id, {
           type: "notify",
@@ -175,14 +178,13 @@ export function makeTools(account: Account) {
       parameters: z.object({}),
       execute: async () => {
         const { searchExternalJobs } = await import("../external");
-        const verifiedSkills = store
-          .getApplications()
-          .filter((a) => a.verified)
-          .map((a) => store.getJob(a.jobId)?.skill)
-          .filter((s): s is string => !!s);
+        const verified = (await store.getApplications()).filter((a) => a.verified);
+        const verifiedSkills = (await Promise.all(verified.map(async (a) => (await store.getJob(a.jobId))?.skill))).filter(
+          (s): s is string => !!s,
+        );
         const skills = [...new Set([...(account.skills ?? []), ...verifiedSkills])];
         const jobs = await searchExternalJobs(skills);
-        store.setExternalJobs(jobs);
+        await store.setExternalJobs(store.getWorker().id, jobs);
         return {
           ok: true,
           matchedSkills: skills,
@@ -196,7 +198,7 @@ export function makeTools(account: Account) {
         "Record that the worker is applying to one of the external listings found by scan_external_jobs, so their submission is tracked on the jobs page. You cannot fill the external site's form for them — tell them the listing is open on their jobs page and you've tracked the application.",
       parameters: z.object({ externalJobId: z.string() }),
       execute: async ({ externalJobId }) => {
-        const app = store.trackExternalJob(externalJobId);
+        const app = await store.trackExternalJob(store.getWorker().id, externalJobId);
         if (!app) return { ok: false, message: "No external listing with that id — scan for jobs first." };
         return { ok: true, tracked: { title: app.title, company: app.company, url: app.url } };
       },
@@ -208,13 +210,13 @@ export function makeTools(account: Account) {
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can mark gigs paid." };
-        const job = store.getJob(jobId);
+        const job = await store.getJob(jobId);
         if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
           return { ok: false, message: "That gig is not one of this employer's postings." };
         }
         const coverage = await store.verifyPaymentCoverage(jobId);
         if (!coverage.ok) return { ok: false, message: coverage.message };
-        const app = store.payWorker(jobId);
+        const app = await store.payWorker(jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
         return { ok: true, status: app.status, gig: job.title, message: "Confirmed payment covers this gig; it is now marked paid." };
       },
@@ -225,16 +227,16 @@ export function makeTools(account: Account) {
         "List available jobs the worker can do, optionally filtered by a skill or keyword the user mentioned (e.g. transcription, translation, phone support).",
       parameters: z.object({ skill: z.string().optional().describe("skill or keyword to filter by") }),
       execute: async ({ skill }) =>
-        store.listJobs(skill).map((j) => ({ id: j.id, title: j.title, pay: j.pay, skill: j.skill, employer: j.employer })),
+        (await store.listJobs(skill)).map((j) => ({ id: j.id, title: j.title, pay: j.pay, skill: j.skill, employer: j.employer })),
     }),
 
     apply_to_job: tool({
       description: "Apply the worker to a job by its id. Confirm with the user first.",
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
-        const job = store.getJob(jobId);
+        const job = await store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
-        const app = store.apply(jobId);
+        const app = await store.apply(jobId);
         if (app.status === "cancelled") {
           return { ok: false, message: "The worker cancelled the assessment for this job earlier, so they can no longer apply to it." };
         }
@@ -245,7 +247,8 @@ export function makeTools(account: Account) {
     get_applications: tool({
       description: "List the worker's current job applications and their status.",
       parameters: z.object({}),
-      execute: async () => store.getApplications().map((a) => ({ ...a, job: store.getJob(a.jobId)?.title })),
+      execute: async () =>
+        await Promise.all((await store.getApplications()).map(async (a) => ({ ...a, job: (await store.getJob(a.jobId))?.title }))),
     }),
 
     start_assessment: tool({
@@ -259,9 +262,9 @@ export function makeTools(account: Account) {
         "Cancel the worker's running assessment for a job. IRREVERSIBLE: a cancelled assessment locks them out of ever applying to that job again. Before calling, warn them of exactly that and get an explicit spoken yes. This is one of the few actions allowed during assessment lockdown.",
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
-        const job = store.getJob(jobId);
+        const job = await store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
-        const app = store.cancelAssessment(account.id, jobId);
+        const app = await store.cancelAssessment(account.id, jobId);
         if (!app) return { ok: false, message: "No application on that job to cancel." };
         return { ok: true, gig: job.title, message: "Assessment cancelled. The worker can no longer apply to this job." };
       },
@@ -272,7 +275,7 @@ export function makeTools(account: Account) {
         "How much time is left on the user's running, time-limited assessment. Call this when they ask how much time they have; report the remaining time honestly, then return to the current question.",
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
-        const t = store.timeRemaining(account.id, jobId);
+        const t = await store.timeRemaining(account.id, jobId);
         if (!t) return { ok: false, message: "This assessment has no time limit, or it hasn't been started." };
         return { ok: true, remainingSeconds: t.remaining, limitSeconds: t.limit };
       },
@@ -287,7 +290,7 @@ export function makeTools(account: Account) {
       }),
       execute: async ({ jobId, answer, answers }) => {
         if (answers !== undefined) {
-          return { ok: true, ...store.gradeMcqAssessment(account.id, jobId, answers) };
+          return { ok: true, ...(await store.gradeMcqAssessment(account.id, jobId, answers)) };
         }
         if (answer !== undefined) {
           return { ok: true, ...(await store.gradeOralAssessment(account.id, jobId, answer)) };
@@ -336,7 +339,7 @@ export function makeTools(account: Account) {
         bio: z.string().optional().describe("updated resume/bio description"),
       }),
       execute: async (input) => {
-        const result = store.updateProfile(account.id, input);
+        const result = await store.updateProfile(account.id, input);
         const acc = result.account;
         return { ok: true, name: acc?.name, skills: acc?.skills, bio: acc?.bio };
       },

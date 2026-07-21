@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 //   { action: "prepare", amount }        arms it and returns the confirm word
 //   { action: "confirm", spokenPhrase }  verifies the word, then really transfers
 export async function POST(req: Request) {
-  const acc = getAccount(userIdFrom(req));
+  const acc = await getAccount(userIdFrom(req));
   const body = (await req.json().catch(() => ({}))) as {
     action?: string;
     amount?: number;

@@ -8,9 +8,9 @@ export const runtime = "nodejs";
 // account on first use, then returns confirmed inbound minus withdrawals.
 export async function GET(req: Request) {
   try {
-    const acc = getAccount(userIdFrom(req));
+    const acc = await getAccount(userIdFrom(req));
     const { balance, account, bankName } = await getBalance(acc.id);
-    const wallet = getWallet(acc.id);
+    const wallet = await getWallet(acc.id);
     return Response.json({
       balance,
       name: acc.name,

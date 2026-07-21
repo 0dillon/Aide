@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 // Employers post gigs here — from the modal form or anywhere else. The voice
 // path goes through the agent's post_gig tool, which calls the same postJob.
 export async function POST(req: Request) {
-  const acc = getAccount(userIdFrom(req));
+  const acc = await getAccount(userIdFrom(req));
   if (acc.role !== "employer") {
     return Response.json({ error: "Only employer accounts can post gigs." }, { status: 403 });
   }
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     }));
   }
 
-  const job = postJob({
+  const job = await postJob({
     title: body.title,
     skill: body.skill,
     pay,

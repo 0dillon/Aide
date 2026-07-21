@@ -1,17 +1,13 @@
 import { createReservedAccount, getReservedAccount, getReservedAccountTransactions } from "../monnify";
+import { api } from "../../convex/_generated/api";
+import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
-import { wallets, withdrawals, state, type PendingWithdrawal, type Wallet, type WithdrawalRecord } from "./state";
+import { type Wallet, type WithdrawalRecord } from "./state";
 
-// Per-account Monnify wallets. Every Aide account gets its own dedicated
-// reserved NUBAN (Monnify's per-customer virtual account), so balances are
-// isolated and real: available = confirmed inbound transfers − withdrawals.
-//
-// Provisioning flow (per Monnify's guidance: create at customer signup):
-//  - signup / voice create_account fire provisionWallet() in the background,
-//    so account creation never blocks on the Monnify API;
-//  - every balance/receive path goes through ensureWallet(), the lazy,
-//    self-healing fallback that provisions on first use if signup-time
-//    provisioning failed or predates this feature.
+// Per-account Monnify wallets, now backed by Convex so balances, payout
+// destinations, and armed withdrawals are shared across serverless instances.
+// available = confirmed inbound transfers to this wallet's NUBAN − this
+// wallet's withdrawals (the Convex ledger).
 
 const CONFIRM_WORDS = ["mango", "sunrise", "guitar", "river", "orange", "candle", "harvest", "compass"];
 const PENDING_TTL_MS = 5 * 60 * 1000;
@@ -19,16 +15,6 @@ const BALANCE_TTL_MS = 20_000;
 
 function makeConfirmPhrase(): string {
   return CONFIRM_WORDS[Math.floor(Math.random() * CONFIRM_WORDS.length)];
-}
-
-// Loose match: the user may say "mango" or "the word is mango". ASR is imperfect,
-// so we check the confirm word appears among the spoken tokens.
-function phraseMatches(spoken: string, phrase: string): boolean {
-  return spoken
-    .toLowerCase()
-    .replace(/[^a-z\s]/g, " ")
-    .split(/\s+/)
-    .includes(phrase);
 }
 
 // The demo worker keeps the reference that predates per-account wallets, so
@@ -42,63 +28,92 @@ export function accountIdFromWalletReference(reference: string): string | undefi
   return reference.startsWith("aide-") ? reference.slice("aide-".length) : undefined;
 }
 
-export function getWallet(accountId: string): Wallet {
-  let w = wallets.get(accountId);
-  if (!w) {
-    w = {
-      accountId,
-      accountReference: walletReferenceFor(accountId),
-      status: "unprovisioned",
-      knownTxRefs: new Set(),
-      txSeeded: false,
-    };
-    wallets.set(accountId, w);
-  }
-  return w;
+type WalletDoc = {
+  accountId: string;
+  accountReference: string;
+  status: "unprovisioned" | "active" | "failed";
+  accountNumber?: string;
+  bankName?: string;
+  lastError?: string;
+  payoutAccount?: string;
+  payoutBankCode?: string;
+  payoutAccountName?: string;
+  pendingWithdrawal?: { amount: number; phrase: string; createdAt: number };
+  knownTxRefs?: string[];
+  txSeeded?: boolean;
+};
+
+function toWallet(d: WalletDoc): Wallet {
+  return {
+    accountId: d.accountId,
+    accountReference: d.accountReference,
+    status: d.status,
+    accountNumber: d.accountNumber,
+    bankName: d.bankName,
+    lastError: d.lastError,
+    payoutAccount: d.payoutAccount,
+    payoutBankCode: d.payoutBankCode,
+    payoutAccountName: d.payoutAccountName,
+    pendingWithdrawal: d.pendingWithdrawal,
+    knownTxRefs: new Set(d.knownTxRefs ?? []),
+    txSeeded: d.txSeeded ?? false,
+  };
 }
 
-export function listActiveWallets(): Wallet[] {
-  return [...wallets.values()].filter((w) => w.status === "active");
+export async function getWallet(accountId: string): Promise<Wallet> {
+  const accountReference = walletReferenceFor(accountId);
+  const d = (await convexClient().query(api.wallets.getByAccount, { accountId })) as WalletDoc | null;
+  if (d) return toWallet(d);
+  await convexClient().mutation(api.wallets.ensure, { accountId, accountReference });
+  return { accountId, accountReference, status: "unprovisioned", knownTxRefs: new Set(), txSeeded: false };
 }
 
-// One in-flight provisioning per account — signup's background call and a
-// concurrent balance request must not both hit Monnify's create endpoint.
+export async function listActiveWallets(): Promise<Wallet[]> {
+  const docs = (await convexClient().query(api.wallets.listActive, {})) as WalletDoc[];
+  return docs.map(toWallet);
+}
+
+// One in-flight provisioning per account PER INSTANCE — signup's background
+// call and a concurrent balance request must not both hit Monnify's create
+// endpoint. getReservedAccount-first also makes provisioning idempotent by
+// reference across instances.
 const inFlight = new Map<string, Promise<Wallet>>();
 
 export function ensureWallet(accountId: string): Promise<Wallet> {
-  const wallet = getWallet(accountId);
-  if (wallet.status === "active") return Promise.resolve(wallet);
   const running = inFlight.get(accountId);
   if (running) return running;
 
   const p = (async () => {
-    const acc = getAccount(accountId);
-    // Reuse the NUBAN if this reference was ever reserved before (restarts,
-    // failed retries); only mint a new reserved account when none exists.
+    const wallet = await getWallet(accountId);
+    if (wallet.status === "active") return wallet;
+    const acc = await getAccount(accountId);
+    const ref = wallet.accountReference;
     let reserved;
     try {
-      reserved = await getReservedAccount(wallet.accountReference);
+      reserved = await getReservedAccount(ref);
     } catch {
       reserved = await createReservedAccount({
-        accountReference: wallet.accountReference,
+        accountReference: ref,
         accountName: acc.name,
         customerName: acc.name,
         // customerEmail must be unique per reserved account on Monnify.
-        customerEmail: acc.email || `${wallet.accountReference}@aide.test`,
+        customerEmail: acc.email || `${ref}@aide.test`,
       });
     }
-    wallet.accountNumber = reserved.accounts[0].accountNumber;
-    wallet.bankName = reserved.accounts[0].bankName;
-    wallet.status = "active";
-    wallet.lastError = undefined;
-    return wallet;
+    const accountNumber = reserved.accounts[0].accountNumber;
+    const bankName = reserved.accounts[0].bankName;
+    await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName });
+    return { ...wallet, status: "active" as const, accountNumber, bankName, lastError: undefined };
   })();
 
   inFlight.set(
     accountId,
-    p.catch((e) => {
-      wallet.status = "failed";
-      wallet.lastError = (e as Error).message;
+    p.catch(async (e) => {
+      await convexClient().mutation(api.wallets.setFailed, {
+        accountId,
+        accountReference: walletReferenceFor(accountId),
+        lastError: (e as Error).message,
+      });
       throw e;
     }).finally(() => inFlight.delete(accountId)),
   );
@@ -115,50 +130,54 @@ export function provisionWalletInBackground(accountId: string): void {
 
 // --- Balance ---
 
-export function cacheWalletBalance(accountId: string, inboundTotal: number): void {
-  const w = getWallet(accountId);
-  w.balanceCache = { value: availableFrom(accountId, inboundTotal), at: Date.now() };
-}
+// Brief per-instance cache — the greeting, payments page, and agent all ask
+// within seconds. Withdrawals invalidate it; a 20s TTL bounds staleness.
+const balanceCache = new Map<string, { value: number; at: number }>();
 
-function availableFrom(accountId: string, inboundTotal: number): number {
-  const withdrawn = withdrawals
-    .filter((r) => r.accountId === accountId && r.status !== "FAILED")
-    .reduce((s, r) => s + r.amount, 0);
+async function availableFrom(accountId: string, inboundTotal: number): Promise<number> {
+  const withdrawn = (await convexClient().query(api.wallets.withdrawnTotal, { accountId })) as number;
   return Math.max(0, inboundTotal - withdrawn);
 }
 
+export async function cacheWalletBalance(accountId: string, inboundTotal: number): Promise<void> {
+  balanceCache.set(accountId, { value: await availableFrom(accountId, inboundTotal), at: Date.now() });
+}
+
 // Real, isolated balance: confirmed inbound transfers to THIS wallet's NUBAN
-// minus this wallet's withdrawals. Cached briefly — the greeting, payments
-// page, and agent all ask within seconds of each other.
+// minus this wallet's withdrawals.
 export async function getBalance(accountId: string): Promise<{ balance: number; account?: string; bankName?: string }> {
-  const w = getWallet(accountId);
-  if (w.balanceCache && Date.now() - w.balanceCache.at < BALANCE_TTL_MS && w.accountNumber) {
-    return { balance: w.balanceCache.value, account: w.accountNumber, bankName: w.bankName };
+  const w = await ensureWallet(accountId);
+  const cached = balanceCache.get(accountId);
+  if (cached && Date.now() - cached.at < BALANCE_TTL_MS && w.accountNumber) {
+    return { balance: cached.value, account: w.accountNumber, bankName: w.bankName };
   }
-  await ensureWallet(accountId);
   const { content } = await getReservedAccountTransactions(w.accountReference);
   const inbound = content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0);
-  const balance = availableFrom(accountId, inbound);
-  w.balanceCache = { value: balance, at: Date.now() };
+  const balance = await availableFrom(accountId, inbound);
+  balanceCache.set(accountId, { value: balance, at: Date.now() });
   return { balance, account: w.accountNumber, bankName: w.bankName };
 }
 
 // --- Withdrawals ---
 
-export function recordWithdrawal(accountId: string, r: Omit<WithdrawalRecord, "at" | "accountId">): void {
-  withdrawals.push({ ...r, accountId, at: Date.now() });
-  getWallet(accountId).balanceCache = undefined; // money left — never serve a stale total
+export async function recordWithdrawal(accountId: string, r: Omit<WithdrawalRecord, "at" | "accountId">): Promise<void> {
+  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amount: r.amount, accountName: r.accountName, status: r.status, at: Date.now() });
+  balanceCache.delete(accountId); // money left — never serve a stale total
 }
 
-export function getWithdrawals(accountId: string): WithdrawalRecord[] {
-  return withdrawals.filter((r) => r.accountId === accountId).sort((a, b) => b.at - a.at);
+export async function getWithdrawals(accountId: string): Promise<WithdrawalRecord[]> {
+  const rows = (await convexClient().query(api.wallets.listWithdrawals, { accountId })) as WithdrawalRecord[];
+  return rows.map((r) => ({ accountId: r.accountId, amount: r.amount, accountName: r.accountName, status: r.status, at: r.at }));
 }
 
-export function setPayout(accountId: string, account: string, bankCode: string, accountName: string): void {
-  const w = getWallet(accountId);
-  w.payoutAccount = account;
-  w.payoutBankCode = bankCode;
-  w.payoutAccountName = accountName;
+export async function setPayout(accountId: string, account: string, bankCode: string, accountName: string): Promise<void> {
+  await convexClient().mutation(api.wallets.setPayout, {
+    accountId,
+    accountReference: walletReferenceFor(accountId),
+    payoutAccount: account,
+    payoutBankCode: bankCode,
+    payoutAccountName: accountName,
+  });
 }
 
 // Step 1 of withdrawal: arm it. Returns the details Aide must read back plus
@@ -168,7 +187,7 @@ export async function armWithdrawal(accountId: string, amount: number): Promise<
   | { ok: true; amount: number; accountName: string; account: string; phrase: string }
   | { ok: false; message: string }
 > {
-  const w = getWallet(accountId);
+  const w = await getWallet(accountId);
   if (!w.payoutAccount || !w.payoutBankCode || !w.payoutAccountName) {
     return { ok: false, message: "No payout account saved yet. Register one first." };
   }
@@ -180,31 +199,34 @@ export async function armWithdrawal(accountId: string, amount: number): Promise<
     return { ok: false, message: `That is more than the available balance of ${balance} naira.` };
   }
   const phrase = makeConfirmPhrase();
-  w.pendingWithdrawal = { amount, phrase, createdAt: Date.now() } satisfies PendingWithdrawal;
+  await convexClient().mutation(api.wallets.armPending, { accountId, amount, phrase, createdAt: Date.now() });
   return { ok: true, amount, accountName: w.payoutAccountName, account: w.payoutAccount, phrase };
 }
 
 // Step 2 of withdrawal: verify the spoken confirmation against the armed phrase.
-// Only a match (within TTL) authorizes the transfer. This is the accessible 2FA gate.
-export function verifyWithdrawal(accountId: string, spokenPhrase: string):
+// The check-and-clear is a single atomic Convex mutation, so two concurrent
+// confirmations can never both authorize the same transfer. This is the
+// accessible 2FA gate.
+export async function verifyWithdrawal(accountId: string, spokenPhrase: string): Promise<
   | { ok: true; amount: number; account: string; bankCode: string; accountName: string }
-  | { ok: false; message: string } {
-  const w = getWallet(accountId);
-  const pending = w.pendingWithdrawal;
-  if (!pending) return { ok: false, message: "No withdrawal is awaiting confirmation. Start one first." };
-  if (Date.now() - pending.createdAt > PENDING_TTL_MS) {
-    w.pendingWithdrawal = undefined;
-    return { ok: false, message: "The confirmation timed out. Please start the withdrawal again." };
+  | { ok: false; message: string }
+> {
+  const r = await convexClient().mutation(api.wallets.consumePending, {
+    accountId,
+    spokenPhrase,
+    now: Date.now(),
+    ttlMs: PENDING_TTL_MS,
+  });
+  if (!r.ok) {
+    if (r.reason === "none") return { ok: false, message: "No withdrawal is awaiting confirmation. Start one first." };
+    if (r.reason === "expired") return { ok: false, message: "The confirmation timed out. Please start the withdrawal again." };
+    return { ok: false, message: `That didn't match. Ask them to say the word "${r.phrase}" to confirm.` };
   }
-  if (!phraseMatches(spokenPhrase, pending.phrase)) {
-    return { ok: false, message: `That didn't match. Ask them to say the word "${pending.phrase}" to confirm.` };
-  }
-  w.pendingWithdrawal = undefined;
   return {
     ok: true,
-    amount: pending.amount,
-    account: w.payoutAccount!,
-    bankCode: w.payoutBankCode!,
-    accountName: w.payoutAccountName!,
+    amount: r.amount,
+    account: r.payoutAccount!,
+    bankCode: r.payoutBankCode!,
+    accountName: r.payoutAccountName!,
   };
 }

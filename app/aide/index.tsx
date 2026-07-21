@@ -2,6 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 import { VoiceEngine, type VoiceState } from "./voice-engine";
 import { streamAgentReply, type Msg } from "./agent-stream";
 
@@ -43,6 +45,12 @@ export function useAide() {
 // strict mode does this).
 let greetedThisLoad = false;
 
+// ONE engine per page, ever. React strict mode mounts effects twice in
+// development, and a second engine means two recognizers fighting for the mic
+// and two voices talking over each other — with the orphaned one impossible to
+// silence, because nothing holds a reference to it any more.
+let sharedEngine: VoiceEngine | null = null;
+
 export function AideProvider({ children }: { children: React.ReactNode }) {
   const [voice, setVoice] = useState<VoiceState>({
     active: false,
@@ -57,6 +65,8 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   const [supported, setSupported] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
+  // This browser's account id, used to subscribe to its own reactive event feed.
+  const [accountId, setAccountId] = useState<string | null>(null);
 
   const engineRef = useRef<VoiceEngine | null>(null);
   const thinkingRef = useRef(false);
@@ -77,6 +87,10 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       setThinking(true);
       thinkingRef.current = true;
       setError(null);
+      // Hold the speaking turn open for the whole reply: sentences arrive from
+      // the model slower than Aide speaks them, and without this the turn ends
+      // at the first lull and the rest lands seconds later as a new utterance.
+      engineRef.current?.beginReply();
       try {
         const result = await streamAgentReply(next, {
           onDelta: (full) => setMessages([...next, { role: "assistant", content: full }]),
@@ -91,6 +105,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id: result.newUserId }),
           }).catch(() => {});
+          setAccountId(result.newUserId);
           setMessages([{ role: "assistant", content: result.full }]);
         }
         if (result.navigateTo) {
@@ -106,6 +121,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         setError(msg);
         speak("Sorry, something went wrong. " + msg);
       } finally {
+        engineRef.current?.endReply();
         setThinking(false);
         thinkingRef.current = false;
       }
@@ -121,19 +137,43 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!VoiceEngine.supported()) {
       setSupported(false);
-      return;
+      // Recognition is unavailable, but Aide can still SPEAK — say the way
+      // forward instead of leaving a blind user in silence. The message is
+      // queued until the first tap/keypress (autoplay is blocked until then),
+      // which enableSpeechOnly's unlock listeners handle. Typed messages still
+      // get spoken replies, since send() speaks through this same engine.
+      const speaker = new VoiceEngine({
+        onState: (patch) => {
+          setVoice((v) => ({ ...v, ...patch }));
+          if (patch.error !== undefined) setError(patch.error);
+        },
+        onFinal: () => {},
+      });
+      engineRef.current = speaker;
+      speaker.enableSpeechOnly();
+      const guide =
+        "Welcome to Aide. This browser cannot hear your voice. To talk to me, please open this page in Google Chrome. Otherwise, type your message in the box on the screen and I will still help you.";
+      setMessages((m) => [...m, { role: "assistant", content: guide }]);
+      speaker.speak(guide);
+      return () => {
+        speaker.stop();
+        if (engineRef.current === speaker) engineRef.current = null;
+      };
     }
 
-    const engine = new VoiceEngine({
-      onState: (patch) => {
-        setVoice((v) => ({ ...v, ...patch }));
-        if (patch.error !== undefined) setError(patch.error);
-      },
-      onFinal: (text) => {
-        if (captureRef.current) captureRef.current(text);
-        else if (!thinkingRef.current) sendRef.current(text);
-      },
-    });
+    // Reuse the existing engine across remounts rather than starting a rival.
+    const engine =
+      sharedEngine ??
+      (sharedEngine = new VoiceEngine({
+        onState: (patch) => {
+          setVoice((v) => ({ ...v, ...patch }));
+          if (patch.error !== undefined) setError(patch.error);
+        },
+        onFinal: (text) => {
+          if (captureRef.current) captureRef.current(text);
+          else if (!thinkingRef.current) sendRef.current(text);
+        },
+      }));
     engineRef.current = engine;
     engine.start();
 
@@ -145,7 +185,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         .catch(() => null)
         .then((data) => {
           const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
-          const greeting = `${base} By the way, you can interrupt me any time by saying: aide, stop talking.`;
+          const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key.`;
           setMessages((m) => [...m, { role: "assistant", content: greeting }]);
           engine.speak(greeting);
         });
@@ -157,26 +197,35 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Live events from the server: Aide announces confirmed money the moment
-  // it lands, without being asked — the voice equivalent of a bank alert.
+  // Aide announces confirmed money the moment it lands, without being asked —
+  // the voice equivalent of a bank alert. Delivery is reactive via Convex (see
+  // PaymentAlerts below); this is just what to say when an event arrives.
+  const handleAideEvent = useCallback(
+    (e: { type: string; amount?: number; from?: string; message?: string }) => {
+      if (e.type === "payment") {
+        const line = `Good news — ${e.amount} naira just landed in your account from ${e.from}. Say balance any time to hear your new total.`;
+        setMessages((m) => [...m, { role: "assistant", content: line }]);
+        speak(line);
+      } else if (e.type === "notify" && typeof e.message === "string") {
+        // Hiring decisions, and anything else the server wants said aloud.
+        const message = e.message;
+        setMessages((m) => [...m, { role: "assistant", content: message }]);
+        speak(message);
+      }
+    },
+    [speak],
+  );
+
+  // Learn this browser's account id on mount (and, server-side, start the local
+  // payment poller). The id drives the reactive event subscription.
   useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.onmessage = (ev) => {
-      try {
-        const e = JSON.parse(ev.data);
-        if (e.type === "payment") {
-          const line = `Good news — ${e.amount} naira just landed in your account from ${e.from}. Say balance any time to hear your new total.`;
-          setMessages((m) => [...m, { role: "assistant", content: line }]);
-          speak(line);
-        } else if (e.type === "notify" && typeof e.message === "string") {
-          // Hiring decisions, and anything else the server wants said aloud.
-          setMessages((m) => [...m, { role: "assistant", content: e.message }]);
-          speak(e.message);
-        }
-      } catch {}
-    };
-    return () => es.close();
-  }, [speak]);
+    fetch("/api/account")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.id) setAccountId(d.id);
+      })
+      .catch(() => {});
+  }, []);
 
   const beginCapture = useCallback((onText: (t: string) => void) => {
     captureRef.current = onText;
@@ -210,9 +259,37 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
+      {accountId && <PaymentAlerts accountId={accountId} onEvent={handleAideEvent} />}
       {workerScreen && pathname !== "/" && <MiniAide />}
     </AideContext.Provider>
   );
+}
+
+// Reactive money alerts: subscribes to this account's Convex event feed and
+// speaks each new confirmed payment (or server notification) exactly once. The
+// `since` mount-time cutoff keeps page history from being re-announced on
+// reload; `seen` guards against reactive re-delivery within a session.
+function PaymentAlerts({
+  accountId,
+  onEvent,
+}: {
+  accountId: string;
+  onEvent: (e: { type: string; amount?: number; from?: string; message?: string }) => void;
+}) {
+  const since = useRef(Date.now());
+  const seen = useRef<Set<string>>(new Set());
+  const events = useQuery(api.events.forAccount, { accountId, since: since.current });
+
+  useEffect(() => {
+    if (!events) return;
+    for (const e of events) {
+      if (seen.current.has(e._id)) continue;
+      seen.current.add(e._id);
+      onEvent(e);
+    }
+  }, [events, onEvent]);
+
+  return null;
 }
 
 // The small Aide that follows the user onto every other screen. It glows

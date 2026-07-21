@@ -22,7 +22,22 @@ export type VoiceEngineHandlers = {
   onFinal: (text: string) => void;
 };
 
-const STOP_PHRASE = /\b(stop talking|aide stop|be quiet)\b/;
+// A mic that opens but only ever delivers silence — almost always an OS or
+// hardware mute — leaves a blind user talking into the void with no cue. After
+// this many full listen windows with the mic open but no sound EVER heard this
+// session, Aide says the problem out loud instead of sitting there deaf.
+const SILENT_CYCLES_BEFORE_WARNING = 2;
+// Only a recognizer that actually ran a full window counts as "silent" — an
+// instant death (aliveMs < this) is a network problem, handled separately.
+const MIC_SILENT_MIN_MS = 3000;
+// Where neural speech comes from. Locally that's the Node route, which keeps a
+// warm Python subprocess for speed; on Vercel a serverless function can't own a
+// long-lived child process, so NEXT_PUBLIC_TTS_PATH points at the native Python
+// function (/api/speak) instead. Either way the browser voice is the fallback.
+const TTS_PATH = process.env.NEXT_PUBLIC_TTS_PATH || "/api/tts";
+
+const MIC_SILENT_WARNING =
+  "I can't hear your microphone. It may be muted or turned off. Please check your microphone, then talk to me again. You can also type to me in the box on the screen.";
 
 export class VoiceEngine {
   private handlers: VoiceEngineHandlers;
@@ -39,6 +54,19 @@ export class VoiceEngine {
   // pulls the next queued sentence, and only when the queue runs dry does the
   // mic get the floor back.
   private queue: string[] = [];
+  // True while a reply is still streaming in from the model. The queue running
+  // dry mid-reply does NOT mean Aide finished talking — it means the next
+  // sentence hasn't been generated yet. Without this the turn ends early, the
+  // mic re-opens, and the rest of the sentence arrives seconds later as if
+  // Aide started over.
+  private replyPending = false;
+  // Set when the user interrupts mid-reply: the model keeps streaming
+  // sentences afterwards, and none of them may be spoken. Cleared by the next
+  // beginReply().
+  private replyAbandoned = false;
+  // The next sentence's audio, already downloading while the current one
+  // speaks — this is what keeps sentence boundaries seamless.
+  private prefetch: { text: string; audio: Promise<string | null> } | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private currentUtter: SpeechSynthesisUtterance | null = null;
   // Speech Chrome blocked before the first user interaction, replayed on the
@@ -51,8 +79,17 @@ export class VoiceEngine {
   private lastStart = 0;
   private rapidEnds = 0;
   private restartDelay = 300;
+  // Dead-mic detection: consecutive listen windows that opened the mic but
+  // heard no sound, whether we've EVER heard sound this session, and whether
+  // we've already spoken the mute warning (so it fires once, not every cycle).
+  private silentCycles = 0;
+  private everHeardSound = false;
+  private micWarned = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private listenOffTimer: ReturnType<typeof setTimeout> | null = null;
+  // Fires if a recognizer we started never opens the mic. Without it, a
+  // recognizer that neither starts nor ends leaves Aide permanently deaf.
+  private openTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(handlers: VoiceEngineHandlers) {
     this.handlers = handlers;
@@ -75,6 +112,15 @@ export class VoiceEngine {
     else this.startRecognition();
   }
 
+  // Speak-only mode for browsers with no SpeechRecognition (Firefox, most iOS):
+  // Aide can't listen, but it must still TALK — a blind user cannot be left at
+  // a silent wall. No mic is opened; we only wire the autoplay-unlock listeners
+  // so the first queued message replays on the user's first tap or keypress.
+  enableSpeechOnly(): void {
+    window.addEventListener("pointerdown", this.unlock);
+    window.addEventListener("keydown", this.unlock);
+  }
+
   stop(): void {
     this.active = false;
     document.removeEventListener("visibilitychange", this.onVisibility);
@@ -89,18 +135,48 @@ export class VoiceEngine {
   // Public speak: interrupts whatever is queued and says this instead.
   speak(text: string): void {
     this.queue = [];
+    this.prefetch = null; // a primed sentence from the old reply must not play
     this.speakNow(text);
+  }
+
+  // Bracket a streaming reply: between these calls, an empty queue means
+  // "waiting for more words", not "done speaking".
+  beginReply(): void {
+    this.replyPending = true;
+    this.replyAbandoned = false;
+  }
+
+  endReply(): void {
+    this.replyPending = false;
+    // The last chunk may have finished playing while we were still holding the
+    // turn open — close it out now.
+    if (!this.currentAudio && !this.currentUtter && this.queue.length === 0 && this.speaking) {
+      this.finishOrNext();
+    }
   }
 
   // Queue a sentence behind whatever is already being said.
   queueSpeak(text: string): void {
-    if (this.speaking) this.queue.push(text);
-    else this.speakNow(text);
+    if (this.replyAbandoned) return; // user cut this reply off
+    // Something is actively playing — queue behind it and prime the pipeline.
+    if (this.currentAudio || this.currentUtter) {
+      this.queue.push(text);
+      this.primeNext();
+      return;
+    }
+    // Nothing is playing: either idle, or holding the turn open mid-reply
+    // waiting for exactly this. Speak it straight away.
+    this.speakNow(text);
   }
 
   // Tap Aide while it talks — or say "aide stop talking" — to cut it off.
   interrupt(): void {
     this.queue = [];
+    this.prefetch = null;
+    this.currentSpeechText = ""; // supersedes any download still in flight
+    // Whatever is still streaming from the model must not be spoken.
+    this.replyPending = false;
+    this.replyAbandoned = true;
     this.stopAllSpeech();
     this.speaking = false;
     this.handlers.onState({ speaking: false });
@@ -125,12 +201,23 @@ export class VoiceEngine {
     }
   };
 
-  private unlock = () => {
+  // One gesture handler for two jobs. First, it replays speech the browser
+  // refused before the user had interacted (every phone does this). Second,
+  // while Aide is talking, ANY tap or key press cuts it off — a blind user
+  // shouldn't have to find a specific button, and with the mic closed during
+  // speech there's no longer a spoken way to interrupt.
+  private unlock = (e: Event) => {
     const pending = this.pendingSpeech;
     if (pending) {
       this.pendingSpeech = null;
       this.speak(pending);
+      return;
     }
+    if (!this.speaking) return;
+    // Typing to Aide, or using a control, shouldn't count as "shut up".
+    const el = e.target as HTMLElement | null;
+    if (el?.closest("input, textarea, select, button, a")) return;
+    this.interrupt();
   };
 
   // --- Recognition ---
@@ -143,7 +230,24 @@ export class VoiceEngine {
     else this.listenOffTimer = setTimeout(() => this.handlers.onState({ listening: false }), 800);
   }
 
+  private scheduleRestart(delay: number): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = setTimeout(() => this.startRecognition(), delay);
+  }
+
+  // Close the mic and cancel anything that would reopen it. Used whenever Aide
+  // is about to speak, so its own voice can never be transcribed as input.
+  private pauseRecognition(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    this.detachRecognizer();
+    this.rec = null;
+    this.setListening(false);
+  }
+
   private detachRecognizer(): void {
+    if (this.openTimer) clearTimeout(this.openTimer);
+    this.openTimer = null;
     const old = this.rec;
     if (!old) return;
     old.onresult = null;
@@ -170,15 +274,36 @@ export class VoiceEngine {
 
     const onState = this.handlers.onState;
 
+    // Per-session flags read in onend to tell "mic opened but stayed silent"
+    // (a muted device) apart from "mic never opened" and "mic heard speech".
+    let sawAudioStart = false;
+    let sawSound = false;
+
     // Lifecycle diagnostics: these pinpoint WHERE hearing breaks — mic never
     // opens, opens but no sound (wrong input device), sound but no speech
     // recognized (service problem), or full success.
     rec.onaudiostart = () => {
       console.info("Aide mic: audio capture started");
+      sawAudioStart = true;
+      if (this.openTimer) clearTimeout(this.openTimer);
+      this.openTimer = null;
+      // "Listening" is only true once the mic is genuinely open. Announcing it
+      // at start() meant the orb claimed to be listening while the recognizer
+      // was in fact dead — the worst possible lie to tell a blind user.
+      this.setListening(true);
       onState({ micStatus: "mic open — no sound detected yet" });
     };
     rec.onsoundstart = () => {
       console.info("Aide mic: sound detected");
+      sawSound = true;
+      // A live mic clears the dead-mic bookkeeping: reset the silent streak,
+      // remember hearing worked, and retract any spoken/visible mute warning.
+      this.silentCycles = 0;
+      this.everHeardSound = true;
+      if (this.micWarned) {
+        this.micWarned = false;
+        onState({ error: null });
+      }
       onState({ micStatus: "hearing sound" });
     };
     rec.onspeechstart = () => {
@@ -196,14 +321,10 @@ export class VoiceEngine {
         else interimText += t;
       }
       const clean = finalText.trim();
-      // While Aide talks, the mic stays open ONLY to hear "aide stop talking".
-      // Everything else heard mid-speech (usually Aide's own echo) is dropped.
-      if (this.speaking) {
-        const heard = (clean + " " + interimText).toLowerCase();
-        const selfEcho = this.currentSpeechText.toLowerCase().includes("stop talking");
-        if (!selfEcho && STOP_PHRASE.test(heard)) this.interrupt();
-        return;
-      }
+      // Belt and braces: the recognizer is stopped before Aide speaks, but a
+      // result already in flight can still land here. Anything heard while
+      // speaking is Aide's own voice coming back through the speaker.
+      if (this.speaking) return;
       onState({ interim: interimText });
       if (!clean || Date.now() - this.speechEndedAt < 400) return;
       this.rapidEnds = 0;
@@ -217,6 +338,25 @@ export class VoiceEngine {
       console.info(`Aide mic: recognizer ended after ${aliveMs}ms`);
       this.setListening(false);
       if (!this.active) return;
+
+      // Dead mic: it opened and ran a full window but never heard a sound, and
+      // nothing has been heard all session. That's a muted/disabled device, not
+      // a quiet user (a live mic trips onsoundstart on room tone within a cycle
+      // or two). Say it aloud — a blind user has no other way to know.
+      if (sawAudioStart && !sawSound && !this.everHeardSound && aliveMs >= MIC_SILENT_MIN_MS) {
+        this.silentCycles += 1;
+        if (this.silentCycles >= SILENT_CYCLES_BEFORE_WARNING && !this.micWarned && !this.speaking) {
+          this.micWarned = true;
+          onState({
+            micStatus: "no sound from your microphone — it may be muted",
+            error: "Aide can't hear your microphone. It may be muted or turned off — check it, then talk again, or type to Aide below.",
+          });
+          console.warn("Aide mic: opened but silent all session — warning the user aloud.");
+          this.speak(MIC_SILENT_WARNING); // resumes recognition when it finishes
+          return;
+        }
+      }
+
       // Instant deaths mean something is wrong (usually no internet — Chrome's
       // recognizer needs it). Back off instead of hot-looping.
       if (aliveMs < 1000) {
@@ -229,8 +369,7 @@ export class VoiceEngine {
         this.rapidEnds = 0;
         this.restartDelay = 300;
       }
-      if (this.restartTimer) clearTimeout(this.restartTimer);
-      this.restartTimer = setTimeout(() => this.startRecognition(), this.restartDelay);
+      this.scheduleRestart(this.restartDelay);
     };
 
     rec.onerror = (e: any) => {
@@ -251,10 +390,26 @@ export class VoiceEngine {
     try {
       rec.start();
       this.lastStart = Date.now();
-      this.setListening(true);
       this.handlers.onState({ micStatus: "mic starting…" });
-    } catch {
-      /* already starting */
+      // A recognizer that never opens the mic also never fires onend, so
+      // nothing would ever schedule a restart — Aide would sit there deaf
+      // while the UI insists it's listening. Give it 4s to report audio.
+      this.openTimer = setTimeout(() => {
+        if (this.rec !== rec || !this.active) return;
+        console.warn("Aide mic: recognizer never opened the mic — restarting.");
+        onState({ micStatus: "mic did not open — restarting" });
+        this.detachRecognizer();
+        this.rec = null;
+        this.scheduleRestart(500);
+      }, 4000);
+    } catch (err) {
+      // Chrome throws InvalidStateError when a previous recognizer hasn't
+      // released the mic yet. The instance is dead on arrival: it will never
+      // fire onend, so the restart chain stops here unless we re-arm it.
+      console.warn("Aide mic: start() threw, retrying shortly:", err);
+      this.rec = null;
+      this.setListening(false);
+      this.scheduleRestart(Math.max(this.restartDelay, 500));
     }
   }
 
@@ -277,16 +432,53 @@ export class VoiceEngine {
       this.speakNow(queued);
       return;
     }
+    // Mid-reply lull: hold the turn open rather than ending it. queueSpeak()
+    // resumes playback the moment the next sentence arrives.
+    if (this.replyPending) return;
     this.speaking = false;
     this.handlers.onState({ speaking: false });
     this.speechEndedAt = Date.now();
     if (this.active) this.startRecognition();
   }
 
+  // Download a sentence's audio COMPLETELY before it plays. Pointing an
+  // <audio> element straight at the endpoint let playback begin sooner, but it
+  // stalled mid-sentence whenever synthesis fell behind the playback cursor —
+  // the audible symptom was Aide stopping mid-word and resuming many seconds
+  // later. A fully buffered clip always plays gapless.
+  private async fetchSpeech(text: string): Promise<string | null> {
+    try {
+      const res = await fetch(`${TTS_PATH}?text=${encodeURIComponent(text)}`);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return blob.size > 0 ? URL.createObjectURL(blob) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Start synthesizing the NEXT sentence while the current one is still
+  // speaking. Without this the queue is strictly serial and every sentence
+  // boundary costs a full TTS round trip — seconds of dead air mid-thought.
+  private primeNext(): void {
+    const next = this.queue[0];
+    if (!next) {
+      this.prefetch = null;
+      return;
+    }
+    if (this.prefetch?.text === next) return;
+    this.prefetch = { text: next, audio: this.fetchSpeech(next) };
+  }
+
   private async speakNow(text: string): Promise<void> {
     if (typeof window === "undefined") return;
-    // The mic STAYS OPEN while Aide talks — onresult drops everything heard
-    // mid-speech except the "aide stop talking" interrupt phrase.
+    // HALF DUPLEX: the microphone is closed for as long as Aide is talking.
+    // Leaving it open meant the recognizer transcribed Aide's own voice out of
+    // the speakers and fed it back as if the user had said it. Echo
+    // cancellation can't be applied to SpeechRecognition, so the only reliable
+    // cure is to not listen while talking. Interrupting is by tap or keypress
+    // instead (see the pointer/key listeners in start()).
+    this.pauseRecognition();
     this.speaking = true;
     this.currentSpeechText = text;
     this.handlers.onState({ speaking: true });
@@ -299,46 +491,70 @@ export class VoiceEngine {
       this.currentAudio = null;
     }
 
-    // Server-side neural TTS, streamed: the <audio> element points straight
-    // at the GET endpoint, so playback begins while synthesis is still in
-    // flight instead of after the whole MP3 has downloaded.
+    // Neural TTS, fully buffered then played. If this sentence was already
+    // primed while the previous one spoke, its audio is here (or nearly here)
+    // already, so the two run back to back with no audible seam.
     try {
-      const audio = new Audio(`/api/tts?text=${encodeURIComponent(text)}`);
+      const pending = this.prefetch?.text === text ? this.prefetch.audio : this.fetchSpeech(text);
+      this.prefetch = null;
+
+      // The moment we know what is playing, start fetching what comes next.
+      this.primeNext();
+
+      const src = await pending;
+      if (src === null) {
+        console.warn("Neural TTS unavailable for this sentence — using the browser voice.");
+        this.speakWithBrowserVoice(text);
+        return;
+      }
+
+      // A newer utterance superseded this one while its audio downloaded
+      // (an interrupt, or a fresh reply) — drop it rather than talk over them.
+      if (this.currentSpeechText !== text) {
+        URL.revokeObjectURL(src);
+        return;
+      }
+
+      const audio = new Audio(src);
       this.currentAudio = audio;
 
-      let audioStarted = false;
-      const watchdog = setTimeout(() => {
-        if (!audioStarted && this.currentAudio === audio) {
-          console.warn("Neural audio never started — falling back to the browser voice.");
-          stopAudio();
-          this.speakWithBrowserVoice(text);
-        }
-      }, 3000);
-
-      const stopAudio = () => {
-        clearTimeout(watchdog);
+      const release = () => {
         audio.onended = null;
         audio.onerror = null;
         audio.pause();
+        URL.revokeObjectURL(src);
         if (this.currentAudio === audio) this.currentAudio = null;
       };
 
-      audio.onplay = () => {
-        audioStarted = true;
-      };
       audio.onended = () => {
-        stopAudio();
+        release();
         this.finishOrNext();
       };
       audio.onerror = () => {
         console.warn("Neural audio playback failed — falling back to the browser voice.");
         const wasCurrent = this.currentAudio === audio;
-        stopAudio();
+        release();
         if (wasCurrent) this.speakWithBrowserVoice(text);
       };
 
       await audio.play();
     } catch (err) {
+      // Phones block audio until the user has interacted with the page, so the
+      // opening greeting is refused outright. Stash it and let the first tap or
+      // keypress replay it — the browser voice would be blocked here too, so
+      // falling through to it would just lose the words entirely.
+      if ((err as Error)?.name === "NotAllowedError") {
+        console.info("Speech blocked before first interaction — will replay on tap.");
+        this.pendingSpeech = text;
+        this.speaking = false;
+        this.handlers.onState({ speaking: false });
+        // Speaking was paused for a sentence that never played, so nothing
+        // would reopen the mic. The user can still talk to Aide even if they
+        // haven't heard it yet — start listening again.
+        this.speechEndedAt = Date.now();
+        if (this.active) this.startRecognition();
+        return;
+      }
       console.warn("Neural TTS failed, falling back to browser-native:", err);
       this.speakWithBrowserVoice(text);
     }

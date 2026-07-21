@@ -1,11 +1,15 @@
-import { createAccount, findAccountByEmail, getAccount, provisionWalletInBackground, publicAccount, type Role } from "@/lib/store";
+import { createAccount, ensurePolling, findAccountByEmail, getAccount, provisionWalletInBackground, publicAccount, type Role } from "@/lib/store";
 import { hashPassword } from "@/lib/auth";
 import { sessionCookie, userCookie, clearUserCookie, userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
-  return Response.json(publicAccount(getAccount(userIdFrom(req))));
+  // The client fetches this on mount to learn its account id; use the same beat
+  // to start the local payment poller (no-op in production, where the webhook
+  // is the real path and setInterval wouldn't survive serverless anyway).
+  ensurePolling();
+  return Response.json(publicAccount(await getAccount(userIdFrom(req))));
 }
 
 // Sign up. With a password → a real credentialed account (signed HttpOnly
@@ -27,10 +31,10 @@ export async function POST(req: Request) {
     if (!email?.trim() || !email.includes("@")) {
       return Response.json({ error: "A valid email is required to create a login." }, { status: 400 });
     }
-    if (findAccountByEmail(email)) {
+    if (await findAccountByEmail(email)) {
       return Response.json({ error: "An account with that email already exists. Try logging in." }, { status: 409 });
     }
-    const acc = createAccount(name, role as Role, email.trim(), hashPassword(password));
+    const acc = await createAccount(name, role as Role, email.trim(), hashPassword(password));
     // Per Monnify's guidance, the wallet (dedicated reserved NUBAN) is minted
     // at signup — in the background, so signing up never waits on the API.
     provisionWalletInBackground(acc.id);
@@ -40,7 +44,7 @@ export async function POST(req: Request) {
     return Response.json(publicAccount(acc), { headers });
   }
 
-  const acc = createAccount(name, role as Role, email?.trim() || undefined);
+  const acc = await createAccount(name, role as Role, email?.trim() || undefined);
   provisionWalletInBackground(acc.id);
   return Response.json(publicAccount(acc), { headers: { "Set-Cookie": userCookie(acc.id) } });
 }

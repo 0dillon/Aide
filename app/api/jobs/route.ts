@@ -7,22 +7,26 @@ export const runtime = "nodejs";
 // their own applications; employers see only the jobs they posted, with the
 // state of applications on them.
 export async function GET(req: Request) {
-  const acc = getAccount(userIdFrom(req));
-  const w = getWorker();
-  const applications = getApplications().map((a) => {
-    const originalJob = getJob(a.jobId);
-    const sanitizedJob = originalJob ? publicJob(originalJob) : undefined;
-    return {
-      ...a,
-      workerName: w.name,
-      workerSkills: w.skills ?? [],
-      workerBio: w.bio ?? "",
-      job: sanitizedJob
-    };
-  });
+  const acc = await getAccount(userIdFrom(req));
+  // Applicant display data comes from the worker's Convex account, not the
+  // in-memory copy, so an employer on another instance sees current details.
+  const w = await getAccount(getWorker().id);
+  const applications = await Promise.all(
+    (await getApplications()).map(async (a) => {
+      const originalJob = await getJob(a.jobId);
+      const sanitizedJob = originalJob ? publicJob(originalJob) : undefined;
+      return {
+        ...a,
+        workerName: w.name,
+        workerSkills: w.skills ?? [],
+        workerBio: w.bio ?? "",
+        job: sanitizedJob
+      };
+    }),
+  );
 
   if (acc.role === "employer") {
-    const jobs = listJobs().filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
+    const jobs = (await listJobs()).filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
     return Response.json({
       role: "employer",
       employerName: acc.name,
@@ -31,5 +35,5 @@ export async function GET(req: Request) {
     });
   }
 
-  return Response.json({ role: "worker", jobs: listJobs().map(publicJob), applications });
+  return Response.json({ role: "worker", jobs: (await listJobs()).map(publicJob), applications });
 }

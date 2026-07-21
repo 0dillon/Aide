@@ -50,9 +50,15 @@ the pitch, not a footnote.
    financial-inclusion story.
 4. **Two-sided and real.** Employer pays in (proven working, see PROOF.md) → worker hears
    the *confirmed* amount → withdraws. BSpeak is one-sided.
-5. **Accessible 2FA by design.** Withdrawal requires Aide to read back amount + account
-   name and the user to speak a confirmation phrase — BSpeak's "verify before submit" idea,
-   applied to money. This is the answer to the OTP problem, demoed live.
+5. **Honest about what voice can and cannot secure.** Withdrawal requires Aide to read back
+   the amount and the destination account name, and the user to speak a one-time word —
+   BSpeak's "verify before submit" idea, applied to money. Say what it is: a **consent
+   gate, not a second factor.** Someone in the room hears the word, so it proves intent,
+   never identity. Identity is defended by the parts that do not depend on speech: money
+   can only leave to a destination registered earlier and name-checked with the bank, a new
+   destination is held before it can receive anything, and withdrawals are capped. Speaker
+   verification is the correct next control and is not built yet. Naming that gap is a
+   stronger position than claiming "voice 2FA" and being taken apart on it.
 
 ## Fast wins to widen the gap (hackathon-scoped)
 
@@ -61,7 +67,8 @@ the pitch, not a footnote.
 - **Multilingual prompt** — Hello UPI and BSpeak are racing to add regional languages.
   Even one extra (Nigerian Pidgin / Yoruba) in the demo is a strong inclusion signal.
   `useVoice` already sets `en-NG`.
-- **"Re-speak to confirm" withdrawal** — spoken confirmation phrase as accessible 2FA.
+- **"Re-speak to confirm" withdrawal** — a spoken one-time word as an accessible consent
+  gate (intent, not identity — see above).
 
 ## Sources
 

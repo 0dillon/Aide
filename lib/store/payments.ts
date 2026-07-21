@@ -236,7 +236,8 @@ export async function armWithdrawal(accountId: string, amount: number): Promise<
 // Step 2 of withdrawal: verify the spoken confirmation against the armed phrase.
 // The check-and-clear is a single atomic Convex mutation, so two concurrent
 // confirmations can never both authorize the same transfer. This is the
-// accessible 2FA gate.
+// consent gate — deliberately NOT called a second factor: anyone in the room
+// hears the word, so it proves intent, not identity.
 export async function verifyWithdrawal(accountId: string, spokenPhrase: string): Promise<
   | { ok: true; amount: number; account: string; bankCode: string; accountName: string }
   | { ok: false; message: string }

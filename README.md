@@ -20,10 +20,16 @@ Everything below is backed by **real Monnify sandbox calls**, not mocks (see
 - **Employer pays in.** Inbound payment lands, Aide re-fetches it server-side and only
   then announces the confirmed amount.
 - **Balance.** The real sum of confirmed (`PAID`) inbound transactions, spoken aloud.
-- **Withdrawal with voice-native 2FA.** A real disbursement call, gated behind a
-  two-step spoken confirmation: Aide reads back the amount and account name, then the user
-  must say a confirm word aloud before any money moves. This replaces the visual OTP that
-  locks blind users out. In sandbox the transfer returns `PENDING_AUTHORIZATION` because
+- **Withdrawal behind a spoken confirmation.** A real disbursement call, gated behind two
+  steps: Aide reads back the amount and the destination account *name*, then the user must
+  say a specific one-time word aloud before any money moves. To be clear about what this
+  is: it is a **consent gate, not a second factor.** Anyone within earshot hears the word,
+  so it cannot prove identity — nothing spoken aloud can. What it does prevent is a
+  withdrawal happening by accident, by mishearing, or on the model's initiative, and it
+  guarantees the user hears where the money is going before agreeing. Identity is defended
+  separately: money can only ever leave to a destination registered earlier and verified
+  with the bank, newly added destinations are held before they can receive anything, and
+  single withdrawals are capped. In sandbox the transfer returns `PENDING_AUTHORIZATION` because
   third-party disbursement is gated behind full business KYC (see PROOF.md), so Aide
   narrates this honestly rather than faking success.
 - **Live payment announcements.** A Monnify webhook (signature-checked, re-verified

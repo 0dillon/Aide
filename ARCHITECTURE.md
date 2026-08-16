@@ -99,7 +99,7 @@ from Convex's `_id`, so cookies, wallet references, and Monnify customer records
 4. If it touches money, add a read-back/confirmation rule to `lib/agent/system.ts`.
 5. If the UI should reflect it, add or extend a screen — and keep it operable by voice.
 
-## Known limits (hackathon scope)
+## Known limits
 
 - Single seeded demo worker; applications belong to that worker.
 - The in-memory `state.ts` (demo worker + seed gigs) resets on server restart; Convex data

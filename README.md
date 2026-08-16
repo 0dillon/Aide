@@ -1,7 +1,7 @@
 # Aide
 
 **A voice-native work-and-pay platform for blind and visually impaired workers in Nigeria.**
-Built for APIConf × Monnify.
+
 
 A worker talks; Aide does the rest — finds jobs, runs a spoken skill assessment, opens a
 real bank account, confirms incoming pay, and reads the balance back aloud. No screen

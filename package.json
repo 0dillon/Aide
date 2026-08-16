@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Aide — voice-native work & pay platform for blind users (APIConf x Monnify).",
+  "description": "Aide — voice-native work & pay platform for blind users.",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",

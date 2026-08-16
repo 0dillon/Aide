@@ -278,7 +278,7 @@ export default function PaymentsPage() {
     <main id="main" className="mx-auto max-w-3xl px-4 py-10 sm:px-8">
       <h1 className="text-4xl font-bold tracking-tight">Payments</h1>
       <p className="mt-2 text-lg text-[var(--ink-soft)]">
-        Your balance, your account for receiving pay, and voice-confirmed withdrawals. All numbers come from Monnify, never invented.
+        Your balance, your account for receiving pay, and voice-confirmed withdrawals. All numbers come from a live API, never invented.
       </p>
 
       {error && (

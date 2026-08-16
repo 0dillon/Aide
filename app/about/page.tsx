@@ -41,7 +41,7 @@ export default function AboutPage() {
       {/* Hero */}
       <section aria-labelledby="lede" className="mx-auto max-w-5xl px-6 pb-16 pt-16 sm:px-10 sm:pt-24">
         <p className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">
-          Voice-native work &amp; pay · APIConf × Monnify
+          Voice-native work &amp; pay · Powered by Live API
         </p>
         <h1 id="lede" className="mt-6 max-w-[16ch] text-5xl font-bold leading-[1.05] tracking-tight sm:text-7xl">
           Getting paid should not require sight.
@@ -111,7 +111,7 @@ export default function AboutPage() {
         </h2>
         <div className="mt-8 grid gap-x-12 gap-y-9 sm:grid-cols-2">
           <Feature title="Real money, never guessed">
-            Every balance and every payment is a live Monnify call, re-checked on our own servers before Aide
+            Every balance and every payment is a live API call, re-checked on our own servers before Aide
             will say it out loud. Aide is architecturally forbidden from inventing a number.
           </Feature>
           <Feature title="A code you say, not one you read">
@@ -150,7 +150,7 @@ export default function AboutPage() {
 
           <div className="mt-10 grid gap-x-12 gap-y-8 sm:grid-cols-2">
             <div>
-              <h3 className="text-sm font-bold uppercase tracking-widest text-[var(--panel-soft)]">Monnify</h3>
+              <h3 className="text-sm font-bold uppercase tracking-widest text-[var(--panel-soft)]">Live API</h3>
               <ul className="mt-3 space-y-2 text-lg">
                 <li>A dedicated reserved account (NUBAN) minted per worker</li>
                 <li>Inbound transfers verified server-side before Aide announces them</li>

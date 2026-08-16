@@ -103,7 +103,7 @@ export default function Employer() {
           rel="noreferrer"
           className="mt-8 inline-flex w-full cursor-pointer items-center justify-center gap-2 bg-[var(--ink)] px-6 py-4 text-lg font-bold text-[var(--paper)] transition-colors hover:opacity-90"
         >
-          Open Monnify to send payment →
+          Open Payment Gateway to send payment →
         </a>
 
         <p className="mt-6 text-sm leading-relaxed text-[var(--ink-soft)]">

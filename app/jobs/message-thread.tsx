@@ -22,8 +22,14 @@ type Message = {
   at: number;
 };
 
-const time = (at: number) =>
-  new Date(at).toLocaleTimeString("en-NG", { hour: "numeric", minute: "2-digit" });
+const time = (at: number) => {
+  if (!at) return "";
+  try {
+    return new Date(at).toLocaleTimeString("en-NG", { hour: "numeric", minute: "2-digit" });
+  } catch (e) {
+    return "";
+  }
+};
 
 export function MessageThread({ jobId, role }: { jobId: string; role: "worker" | "employer" }) {
   const messages = useQuery(api.messages.listForJob, { jobId }) as Message[] | undefined;
@@ -43,7 +49,7 @@ export function MessageThread({ jobId, role }: { jobId: string; role: "worker" |
       ? "Send onboarding directives, credentials, or next steps. You can also say “Aide, message the worker…”."
       : "Reply or ask a question about the job. You can also say “Aide, read my messages” or “Aide, tell the employer…”.";
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     const body = text.trim();
     if (!body || sending) return;
@@ -78,7 +84,7 @@ export function MessageThread({ jobId, role }: { jobId: string; role: "worker" |
         className="mt-3 max-h-64 space-y-3 overflow-y-auto"
       >
         {messages === undefined && <p className="text-[var(--ink-soft)]">Loading messages…</p>}
-        {messages && messages.length === 0 && (
+        {messages !== undefined && messages.length === 0 && (
           <p className="text-[var(--ink-soft)]">No messages yet. Start the conversation below.</p>
         )}
         {messages?.map((m) => {

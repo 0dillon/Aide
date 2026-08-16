@@ -25,7 +25,13 @@ export async function POST(req: Request) {
     return Response.json({ error: "DEEPSEEK_API_KEY is not set. Add it to .env to enable Aide." }, { status: 500 });
   }
 
-  const { messages } = (await req.json()) as { messages: Msg[] };
+  let messages: Msg[];
+  try {
+    const body = (await req.json()) as { messages: Msg[] };
+    messages = body.messages;
+  } catch (e) {
+    return Response.json({ error: "invalid json payload" }, { status: 400 });
+  }
   if (!Array.isArray(messages) || messages.length === 0) {
     return Response.json({ error: "messages required" }, { status: 400 });
   }

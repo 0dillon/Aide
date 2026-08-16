@@ -15,14 +15,19 @@ export async function POST(req: Request) {
     return Response.json({ error: "invalid signature" }, { status: 401 });
   }
 
-  const body = JSON.parse(raw) as {
-    eventType?: string;
-    eventData?: {
-      transactionReference?: string;
-      customer?: { name?: string };
-      product?: { type?: string; reference?: string };
+  let body;
+  try {
+    body = JSON.parse(raw) as {
+      eventType?: string;
+      eventData?: {
+        transactionReference?: string;
+        customer?: { name?: string };
+        product?: { type?: string; reference?: string };
+      };
     };
-  };
+  } catch (e) {
+    return Response.json({ error: "invalid json payload" }, { status: 400 });
+  }
   const ref = body.eventData?.transactionReference;
   const accountId = accountIdFromWalletReference(body.eventData?.product?.reference ?? "");
 

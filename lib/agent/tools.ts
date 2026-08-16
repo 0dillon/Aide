@@ -60,7 +60,7 @@ export function makeTools(account: Account) {
       }),
       execute: async ({ name, role }) => {
         const acc = await store.createAccount(name, role);
-        // Every new account gets its own Monnify wallet, minted in the
+        // Every new account gets its own live API wallet, minted in the
         // background so voice signup never waits on the payment rail.
         store.provisionWalletInBackground(acc.id);
         return { ok: true, userId: acc.id, name: acc.name, role: acc.role };
@@ -241,7 +241,7 @@ export function makeTools(account: Account) {
 
     mark_gig_paid: tool({
       description:
-        "For employers: mark one of their gigs as paid. This ONLY succeeds when a confirmed Monnify payment actually covers the gig's pay — if it fails, tell the employer to send the money from the payout desk first. Never claim a gig is paid unless this returns ok.",
+        "For employers: mark one of their gigs as paid. This ONLY succeeds when a confirmed live API payment actually covers the gig's pay — if it fails, tell the employer to send the money from the payout desk first. Never claim a gig is paid unless this returns ok.",
       parameters: z.object({ jobId: z.string() }),
       execute: async ({ jobId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can mark gigs paid." };
@@ -342,7 +342,7 @@ export function makeTools(account: Account) {
     }),
 
     get_balance: tool({
-      description: "Get this user's own wallet balance (real, from Monnify) in Naira, with their dedicated account number for receiving money.",
+      description: "Get this user's own wallet balance (real, from the live API) in Naira, with their dedicated account number for receiving money.",
       parameters: z.object({}),
       execute: async () => {
         const { balance, account: acctNo, bankName } = await store.getBalance(account.id);

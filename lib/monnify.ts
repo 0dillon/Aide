@@ -88,9 +88,20 @@ export type ReservedTxn = {
 
 // List payments made into a reserved account. This is how Aide confirms
 // (server-side) that money actually landed before announcing it.
-export function getReservedAccountTransactions(accountReference: string): Promise<{ content: ReservedTxn[] }> {
+export async function getReservedAccountTransactions(accountReference: string): Promise<{ content: ReservedTxn[] }> {
   const ref = encodeURIComponent(accountReference);
-  return authed(`/api/v1/bank-transfer/reserved-accounts/transactions?accountReference=${ref}&page=0&size=100`, "GET");
+  const all: ReservedTxn[] = [];
+  let page = 0;
+  while (true) {
+    const res = await authed<{ content: ReservedTxn[] }>(
+      `/api/v1/bank-transfer/reserved-accounts/transactions?accountReference=${ref}&page=${page}&size=100`,
+      "GET"
+    );
+    all.push(...res.content);
+    if (res.content.length < 100) break;
+    page++;
+  }
+  return { content: all };
 }
 
 // Re-fetch a transaction server-side. NEVER trust a webhook payload alone.
@@ -140,6 +151,8 @@ export function walletBalance(walletId: string): Promise<{ availableBalance: num
 // Verify an inbound webhook: SHA-512 HMAC of the RAW body using the secret key.
 export function isValidWebhook(rawBody: string, signature: string | undefined): boolean {
   if (!signature) return false;
+  // Bound payload size to prevent OOM via massive hashing (max 512KB)
+  if (rawBody.length > 512 * 1024) return false;
   const computed = createHmac("sha512", env.secretKey).update(rawBody).digest("hex");
   return computed === signature;
 }

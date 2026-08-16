@@ -112,8 +112,9 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
         accountReference: ref,
         accountName: acc.name,
         customerName: acc.name,
-        // customerEmail must be unique per reserved account on Monnify.
-        customerEmail: acc.email || `${ref}@aide.test`,
+        // customerEmail must be globally unique on Monnify, so we ignore acc.email
+        // and strictly use the globally unique wallet reference to prevent lockout.
+        customerEmail: `${ref}@aide.test`,
       });
     }
     const accountNumber = reserved.accounts[0].accountNumber;
@@ -216,7 +217,8 @@ function hashPhrase(text: string): string {
 // All contiguous word-windows of the spoken text, hashed — so "my phrase is
 // sunny garden gate" still matches a stored "sunny garden gate".
 function candidateHashesFor(spoken: string): string[] {
-  const words = normalizePhrase(spoken).split(" ").filter(Boolean);
+  // Bound the input size to prevent Algorithmic DoS on the event loop.
+  const words = normalizePhrase(spoken).split(" ").filter(Boolean).slice(0, 100);
   const out = new Set<string>();
   const MAX_WINDOW = 8;
   for (let len = 1; len <= Math.min(words.length, MAX_WINDOW); len++) {

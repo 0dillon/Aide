@@ -82,7 +82,7 @@ export function ExternalJobsSection() {
 
       {error && (
         <p role="alert" className="mt-4 rounded-lg border-2 border-[var(--alert)] px-4 py-2 font-bold text-[var(--alert)]">
-          Error: {error}
+          {error}
         </p>
       )}
 

@@ -132,7 +132,7 @@ export default function AidePage() {
             This browser has no speech recognition. Use Chrome, or type below.
           </p>
         )}
-        {error && <p role="alert" className="max-w-md text-center text-[var(--alert)]">Error: {error}</p>}
+        {error && <p role="alert" className="max-w-md text-center text-[var(--alert)]">{error}</p>}
         {micStatus && <p className="max-w-md text-center text-sm text-[var(--ink-soft)]">Mic: {micStatus}</p>}
 
         <MicMeter dormant={dormant} />

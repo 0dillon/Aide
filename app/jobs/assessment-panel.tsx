@@ -156,7 +156,7 @@ export function AssessmentPanel({
     <section aria-label="Assessment" className="mt-8 rounded-xl border-4 border-[var(--accent)] bg-white p-6">
       {error && (
         <p role="alert" className="mb-4 rounded-lg border-2 border-[var(--alert)] px-4 py-2 font-bold text-[var(--alert)]">
-          Error: {error}
+          {error}
         </p>
       )}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b-2 border-[var(--line)] pb-4">

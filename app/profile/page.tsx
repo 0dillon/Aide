@@ -53,7 +53,7 @@ export default function ProfilePage() {
     return (
       <main id="main" className="mx-auto max-w-3xl px-4 py-10 sm:px-8">
         <p role="alert" className="rounded-lg border-2 border-[var(--alert)] px-4 py-3 font-bold text-[var(--alert)]">
-          Error: {error}
+          {error}
         </p>
       </main>
     );
@@ -395,7 +395,7 @@ function EditProfileModal({
 
         {error && (
           <p role="alert" className="mt-4 rounded-lg border-2 border-[var(--alert)] px-4 py-2 font-bold text-[var(--alert)]">
-            Error: {error}
+            {error}
           </p>
         )}
 

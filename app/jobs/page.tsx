@@ -74,7 +74,8 @@ function JobsPageInner() {
 
   const load = useCallback(async () => {
     const res = await fetch("/api/jobs");
-    const data = await res.json();
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.error || "Server error: Convex may be unreachable.");
     setJobs(data.jobs ?? []);
     setApps(data.applications ?? []);
     setRole(data.role ?? "worker");

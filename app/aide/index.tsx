@@ -237,7 +237,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       // signup, login, switch, logout) starts clean with its own greeting —
       // which is also what triggers new-account onboarding.
       fetch("/api/account")
-        .then((r) => r.json())
+        .then((r) => r.json().catch(() => ({})))
         .catch(() => null)
         .then((d) => {
           const id: string | null = d?.id ?? null;
@@ -256,7 +256,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
           clearSavedTranscript();
           // Greet with real state: pending assessments, money to withdraw, jobs.
           fetch("/api/greeting")
-            .then((res) => res.json())
+            .then((res) => res.json().catch(() => ({})))
             .catch(() => null)
             .then((data) => {
               const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";

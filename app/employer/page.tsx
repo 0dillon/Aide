@@ -18,16 +18,24 @@ export default function Employer() {
 
   useEffect(() => {
     fetch("/api/worker")
-      .then((r) => r.json())
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(d?.error || "Server error: Convex may be unreachable.");
+        return d;
+      })
       .then((d) => (d.error ? setError(d.error) : setWorker(d)))
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
 
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const jobId = params.get("jobId");
       if (jobId) {
         fetch("/api/jobs")
-          .then((r) => r.json())
+          .then(async (r) => {
+            const d = await r.json().catch(() => null);
+            if (!r.ok) throw new Error(d?.error || "Server error");
+            return d;
+          })
           .then((d) => {
             if (d.jobs) {
               const found = d.jobs.find((j: any) => j.id === jobId);

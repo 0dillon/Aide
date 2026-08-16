@@ -36,9 +36,13 @@ export default function ProfilePage() {
 
   const load = () => {
     fetch("/api/profile")
-      .then((r) => r.json())
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(d?.error || "Server error: Convex may be unreachable.");
+        return d;
+      })
       .then((d) => (d.error ? setError(d.error) : setProfile(d)))
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
 
   useEffect(() => {

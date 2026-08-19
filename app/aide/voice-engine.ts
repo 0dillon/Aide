@@ -6,6 +6,12 @@
 
 type SR = any; // Web Speech API isn't in lib.dom
 
+// A sentence waiting its turn at the speaker, together with its audio once
+// synthesis has been started for it. Holding the promise ON the queue entry
+// (rather than in a single text-keyed slot) means a sentence can never be
+// confused with an identical one earlier in the reply.
+type QueuedSpeech = { text: string; audio?: Promise<string | null> };
+
 export type VoiceState = {
   active: boolean;
   listening: boolean;
@@ -51,12 +57,48 @@ const THINKING_FILLERS = ["One moment.", "Let me check.", "Just a second.", "Bea
 // bridge turns into a verbal tic. This sits past it, so it only speaks when a
 // reply is genuinely stuck.
 const FILLER_AFTER_MS = 4200;
+// The budget above is silence measured from the USER's point of view, which
+// starts when they stop talking — not when the request goes out. The quiet
+// period that decides they finished is part of that silence, so it is
+// subtracted, and this is the floor so the filler can never fire on top of
+// its own trigger.
+const FILLER_MIN_WAIT_MS = 1500;
 
 // Holding the microphone open forever costs battery, keeps a recognizer
 // streaming the room to a speech service, and means every stray noise is being
 // listened to. After this much quiet Aide closes the mic and waits to be woken.
 const IDLE_SLEEP_MS = 90_000;
 const SLEEP_NOTICE = "I'll stop listening for now. Tap the screen or press any key when you want me.";
+
+// Echo defence, part one: audio.onended fires when playback reaches the end
+// of the buffer, but the speaker and the room keep sounding briefly after
+// that. Keeping the mic shut across that decay means the tail is never
+// captured at all. Deliberately short — every millisecond here is a
+// millisecond of a fast user's first word that would be clipped.
+const MIC_REOPEN_DELAY_MS = 150;
+// Echo defence, part two: how long after Aide's voice stops that a transcript
+// is still checked against what Aide just said. A time-only guard cannot do
+// this job — recognizer results surface well after the audio was captured, so
+// a window wide enough to catch echo also throws away a quick reply. Matching
+// on CONTENT instead lets a fast user through and still rejects Aide's own
+// words coming back.
+const ECHO_WINDOW_MS = 1500;
+
+// A "final" result from the Web Speech API means the recognizer heard a
+// pause — not that the user finished their thought. Thinking mid-sentence,
+// reading out an account number, or taking a breath all produce one. So a
+// final is buffered rather than acted on, and only becomes a turn once the
+// user has been quiet this long. Any interim result (or speech starting
+// again) restarts the countdown, so this is the wait after someone genuinely
+// stops — not a flat tax on every turn.
+const FINAL_QUIET_MS = 450;
+
+// How many sentences ahead to synthesize. The model streams sentences faster
+// than TTS can render them, so fetching only one ahead leaves each sentence
+// waiting on a round trip that could have run during the previous one. A
+// small lookahead overlaps them; a large one would waste synthesis on
+// sentences an interrupt is about to discard.
+const PREFETCH_AHEAD = 2;
 
 const MIC_SILENT_WARNING =
   "I can't hear your microphone. It may be muted or turned off. Please check your microphone, then talk to me again. You can also type to me in the box on the screen.";
@@ -68,14 +110,22 @@ export class VoiceEngine {
   private active = false;
   private speaking = false;
   private speechEndedAt = 0;
-  // What Aide is currently saying — used to avoid self-triggering the
-  // "stop talking" voice interrupt when Aide itself utters the phrase.
-  private currentSpeechText = "";
+
+  // Which utterance owns the speaker. `speechSeq` is a monotonic id handed to
+  // each accepted sentence; `activeSpeech` is the id currently holding the
+  // floor, and is claimed SYNCHRONOUSLY — before the TTS fetch is awaited.
+  // That matters: synthesis takes seconds, and until this existed a sentence
+  // arriving mid-fetch saw no <audio> element yet, assumed the speaker was
+  // free, and started itself — so the earlier sentence was thrown away when
+  // its audio finally landed. Whole opening paragraphs went unspoken. 0 means
+  // nothing holds the floor.
+  private speechSeq = 0;
+  private activeSpeech = 0;
 
   // Streamed replies are spoken sentence by sentence: each finished utterance
   // pulls the next queued sentence, and only when the queue runs dry does the
   // mic get the floor back.
-  private queue: string[] = [];
+  private queue: QueuedSpeech[] = [];
   // True while a reply is still streaming in from the model. The queue running
   // dry mid-reply does NOT mean Aide finished talking — it means the next
   // sentence hasn't been generated yet. Without this the turn ends early, the
@@ -92,9 +142,6 @@ export class VoiceEngine {
   // reopens it, so Aide isn't streaming an empty room indefinitely.
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private dormant = false;
-  // The next sentence's audio, already downloading while the current one
-  // speaks — this is what keeps sentence boundaries seamless.
-  private prefetch: { text: string; audio: Promise<string | null> } | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private currentUtter: SpeechSynthesisUtterance | null = null;
   // Speech Chrome blocked before the first user interaction, replayed on the
@@ -118,6 +165,18 @@ export class VoiceEngine {
   // Fires if a recognizer we started never opens the mic. Without it, a
   // recognizer that neither starts nor ends leaves Aide permanently deaf.
   private openTimer: ReturnType<typeof setTimeout> | null = null;
+  // Delays the mic reopening after Aide finishes speaking (echo settle time).
+  private reopenTimer: ReturnType<typeof setTimeout> | null = null;
+  // The last few things Aide said, for the echo check. Only recent utterances
+  // matter: echo can only ever be sound that just left the speaker.
+  private recentSpeech: string[] = [];
+  // "Is the user actually done talking?" — final results accumulate here and
+  // only become a turn once the room has been quiet for FINAL_QUIET_MS.
+  private finalQuietTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingFinalText = "";
+  // When the user was last heard making any sound we accepted. Lets the
+  // thinking-filler stay honest about how long they have actually waited.
+  private lastHeardAt = 0;
 
   constructor(handlers: VoiceEngineHandlers) {
     this.handlers = handlers;
@@ -166,6 +225,10 @@ export class VoiceEngine {
     window.removeEventListener("keydown", this.unlock);
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (this.listenOffTimer) clearTimeout(this.listenOffTimer);
+    if (this.reopenTimer) clearTimeout(this.reopenTimer);
+    if (this.finalQuietTimer) clearTimeout(this.finalQuietTimer);
+    this.finalQuietTimer = null;
+    this.pendingFinalText = "";
     this.detachRecognizer();
     this.stopAllSpeech();
   }
@@ -173,13 +236,15 @@ export class VoiceEngine {
   // True while anything is playing or queued — lets callers wait for Aide to
   // finish a sentence before doing something disruptive (e.g. reload on logout).
   isSpeakingNow(): boolean {
-    return !!(this.currentAudio || this.currentUtter) || this.queue.length > 0;
+    // activeSpeech covers the gap where a sentence has been accepted and its
+    // audio is still downloading — nothing is audible yet, but a turn is very
+    // much still in progress.
+    return !!(this.currentAudio || this.currentUtter) || this.activeSpeech !== 0 || this.queue.length > 0;
   }
 
   // Public speak: interrupts whatever is queued and says this instead.
   speak(text: string): void {
-    this.queue = [];
-    this.prefetch = null; // a primed sentence from the old reply must not play
+    this.discardQueue(); // primed sentences from the old reply must not play
     this.speakNow(text);
   }
 
@@ -193,6 +258,15 @@ export class VoiceEngine {
     // is indistinguishable from the app being broken, so if the model hasn't
     // produced anything audible shortly, say something. Only fires when the
     // wait is real — a fast reply cancels it before it is ever heard.
+    //
+    // The countdown starts from when the USER stopped talking, not from this
+    // call: deciding they had finished already cost them a beat of silence,
+    // and that beat is part of the same wait they are sitting through. Typed
+    // messages (nothing heard recently) just get the full budget.
+    const sinceHeard = Date.now() - this.lastHeardAt;
+    const alreadyWaited = this.lastHeardAt && sinceHeard < 3000 ? sinceHeard : 0;
+    const fillerDelay = Math.max(FILLER_MIN_WAIT_MS, FILLER_AFTER_MS - alreadyWaited);
+
     if (this.ackTimer) clearTimeout(this.ackTimer);
     this.ackTimer = setTimeout(() => {
       this.ackTimer = null;
@@ -200,7 +274,7 @@ export class VoiceEngine {
       if (this.currentAudio || this.currentUtter || this.queue.length > 0) return;
       this.fillerIndex = (this.fillerIndex + 1) % THINKING_FILLERS.length;
       this.speakNow(THINKING_FILLERS[this.fillerIndex]);
-    }, FILLER_AFTER_MS);
+    }, fillerDelay);
   }
 
   endReply(): void {
@@ -210,8 +284,9 @@ export class VoiceEngine {
       this.ackTimer = null;
     }
     // The last chunk may have finished playing while we were still holding the
-    // turn open — close it out now.
-    if (!this.currentAudio && !this.currentUtter && this.queue.length === 0 && this.speaking) {
+    // turn open — close it out now. activeSpeech must be clear too, or this
+    // would end the turn on top of a sentence still being synthesized.
+    if (!this.currentAudio && !this.currentUtter && this.activeSpeech === 0 && this.queue.length === 0 && this.speaking) {
       this.finishOrNext();
     }
   }
@@ -224,22 +299,22 @@ export class VoiceEngine {
       clearTimeout(this.ackTimer);
       this.ackTimer = null;
     }
-    // Something is actively playing — queue behind it and prime the pipeline.
-    if (this.currentAudio || this.currentUtter) {
-      this.queue.push(text);
-      this.primeNext();
+    // The speaker is taken — either audible, or downloading the sentence
+    // ahead of this one. Queue behind it and get synthesis started early.
+    if (this.activeSpeech !== 0) {
+      this.queue.push({ text });
+      this.primeQueue();
       return;
     }
-    // Nothing is playing: either idle, or holding the turn open mid-reply
-    // waiting for exactly this. Speak it straight away.
+    // Genuinely free: either idle, or holding the turn open mid-reply waiting
+    // for exactly this. Speak it straight away.
     this.speakNow(text);
   }
 
   // Tap Aide while it talks — or say "aide stop talking" — to cut it off.
   interrupt(): void {
-    this.queue = [];
-    this.prefetch = null;
-    this.currentSpeechText = ""; // supersedes any download still in flight
+    this.discardQueue();
+    this.activeSpeech = 0; // supersedes any synthesis still in flight
     // Whatever is still streaming from the model must not be spoken.
     this.replyPending = false;
     this.replyAbandoned = true;
@@ -247,10 +322,20 @@ export class VoiceEngine {
       clearTimeout(this.ackTimer);
       this.ackTimer = null;
     }
+    // A deliberate interrupt means "start fresh" — any not-yet-dispatched
+    // fragment from before belongs to a turn the user just cut off.
+    if (this.finalQuietTimer) clearTimeout(this.finalQuietTimer);
+    this.finalQuietTimer = null;
+    this.pendingFinalText = "";
+    if (this.reopenTimer) clearTimeout(this.reopenTimer);
+    this.reopenTimer = null;
     this.stopAllSpeech();
     this.speaking = false;
     this.handlers.onState({ speaking: false });
     this.speechEndedAt = Date.now();
+    // A tap or keypress is the user saying they are about to talk RIGHT NOW —
+    // reopen at once rather than paying the decay delay. stopAllSpeech() cut
+    // the audio dead, so there is no tail to wait out.
     if (this.active) this.startRecognition();
   }
 
@@ -342,6 +427,8 @@ export class VoiceEngine {
   private pauseRecognition(): void {
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
+    if (this.reopenTimer) clearTimeout(this.reopenTimer);
+    this.reopenTimer = null;
     this.detachRecognizer();
     this.rec = null;
     this.setListening(false);
@@ -358,6 +445,50 @@ export class VoiceEngine {
     try {
       old.abort();
     } catch {}
+  }
+
+  // Hold a final result rather than acting on it: the Web Speech API
+  // finalizes on any short pause, not just at end-of-turn, so several of
+  // these can make up one spoken sentence. They accumulate here and are
+  // handed over as a single turn once the user actually stops.
+  private bufferFinal(text: string): void {
+    this.pendingFinalText = this.pendingFinalText ? `${this.pendingFinalText} ${text}` : text;
+    this.armFinalDispatch();
+  }
+
+  // (Re)start the quiet period that decides the user has finished. Called
+  // again on every further word — a pause only counts as the end of a turn
+  // if nothing follows it.
+  private armFinalDispatch(): void {
+    if (!this.pendingFinalText) return;
+    if (this.finalQuietTimer) clearTimeout(this.finalQuietTimer);
+    this.finalQuietTimer = setTimeout(() => {
+      this.finalQuietTimer = null;
+      const full = this.pendingFinalText.trim();
+      this.pendingFinalText = "";
+      if (full) this.handlers.onFinal(full);
+    }, FINAL_QUIET_MS);
+  }
+
+  // Is this transcript Aide hearing itself? The mic is shut while Aide talks
+  // and stays shut through the speaker's decay, so this only has to catch
+  // what slips past that — which makes a content match affordable, and a
+  // content match is what lets a user who answers instantly still be heard.
+  private looksLikeEcho(heard: string): boolean {
+    if (!this.speechEndedAt || Date.now() - this.speechEndedAt > ECHO_WINDOW_MS) return false;
+    const said = normalizeForMatch(this.recentSpeech.join(" "));
+    const h = normalizeForMatch(heard);
+    if (!said || !h) return false;
+    // A clean capture of the tail is a literal fragment of what was just said.
+    if (said.includes(h)) return true;
+    // Echo often comes back garbled, so also reject a transcript made almost
+    // entirely of Aide's own words. Short utterances are exempt: "yes", "no",
+    // or "my balance" are far likelier to be the user than a mangled echo,
+    // and wrongly swallowing those is worse than hearing one stray word.
+    const words = h.split(" ");
+    if (words.length < 4) return false;
+    const overlap = words.filter((w) => said.includes(w)).length;
+    return overlap / words.length >= 0.8;
   }
 
   // Create a FRESH recognizer each time — Chrome instances can wedge after
@@ -411,10 +542,17 @@ export class VoiceEngine {
     rec.onspeechstart = () => {
       console.info("Aide mic: speech detected");
       this.armIdleTimer(); // someone is talking — the session is alive
+      // Talking again after a pause: they had not finished after all, so hold
+      // the buffered fragment back and wait for the rest.
+      this.armFinalDispatch();
       onState({ micStatus: "hearing speech…" });
     };
 
     rec.onresult = (e: any) => {
+      // Belt and braces: the recognizer is stopped before Aide speaks, but a
+      // result already in flight can still land here. Anything heard while
+      // Aide is talking is its own voice out of the speaker, never the user.
+      if (this.speaking) return;
       onState({ micStatus: "recognizing speech" });
       let finalText = "";
       let interimText = "";
@@ -423,16 +561,25 @@ export class VoiceEngine {
         if (e.results[i].isFinal) finalText += t;
         else interimText += t;
       }
+
+      const partial = interimText.trim();
+      if (partial && !this.looksLikeEcho(partial)) {
+        onState({ interim: interimText });
+        this.lastHeardAt = Date.now();
+        // Still mid-sentence: whatever is buffered is not a finished turn yet.
+        this.armFinalDispatch();
+      }
+
       const clean = finalText.trim();
-      // Belt and braces: the recognizer is stopped before Aide speaks, but a
-      // result already in flight can still land here. Anything heard while
-      // speaking is Aide's own voice coming back through the speaker.
-      if (this.speaking) return;
-      onState({ interim: interimText });
-      if (!clean || Date.now() - this.speechEndedAt < 400) return;
+      if (!clean) return;
+      if (this.looksLikeEcho(clean)) {
+        console.info("Aide mic: ignored an echo of Aide's own voice:", clean);
+        return;
+      }
       this.rapidEnds = 0;
+      this.lastHeardAt = Date.now();
       onState({ interim: "" });
-      this.handlers.onFinal(clean);
+      this.bufferFinal(clean);
     };
 
     rec.onend = () => {
@@ -530,9 +677,12 @@ export class VoiceEngine {
   }
 
   private finishOrNext(): void {
+    // The utterance that was holding the floor is done with it.
+    this.activeSpeech = 0;
     const queued = this.queue.shift();
     if (queued !== undefined) {
-      this.speakNow(queued);
+      this.primeQueue(); // keep the lookahead topped up
+      this.speakNow(queued.text, queued.audio);
       return;
     }
     // Mid-reply lull: hold the turn open rather than ending it. queueSpeak()
@@ -544,7 +694,16 @@ export class VoiceEngine {
     // Aide just finished the sleep announcement — stay asleep rather than
     // reopening the mic it only just closed.
     if (this.dormant) return;
-    if (this.active) this.startRecognition();
+    if (this.active) {
+      // Let the speaker's decay pass before the mic reopens, rather than
+      // racing it the instant playback ends. Kept very short so a user who
+      // answers straight away is not clipped.
+      if (this.reopenTimer) clearTimeout(this.reopenTimer);
+      this.reopenTimer = setTimeout(() => {
+        this.reopenTimer = null;
+        if (this.active && !this.speaking && !this.dormant) this.startRecognition();
+      }, MIC_REOPEN_DELAY_MS);
+    }
     this.armIdleTimer();
   }
 
@@ -564,21 +723,34 @@ export class VoiceEngine {
     }
   }
 
-  // Start synthesizing the NEXT sentence while the current one is still
+  // Start synthesizing the next few sentences while the current one is still
   // speaking. Without this the queue is strictly serial and every sentence
   // boundary costs a full TTS round trip — seconds of dead air mid-thought.
-  private primeNext(): void {
-    const next = this.queue[0];
-    if (!next) {
-      this.prefetch = null;
-      return;
+  private primeQueue(): void {
+    const ahead = Math.min(PREFETCH_AHEAD, this.queue.length);
+    for (let i = 0; i < ahead; i++) {
+      const item = this.queue[i];
+      if (!item.audio) item.audio = this.fetchSpeech(item.text);
     }
-    if (this.prefetch?.text === next) return;
-    this.prefetch = { text: next, audio: this.fetchSpeech(next) };
   }
 
-  private async speakNow(text: string): Promise<void> {
+  // Drop everything still waiting to be said. Any audio already synthesized
+  // for those sentences has an object URL attached, so it is revoked rather
+  // than left to leak once the promise resolves into nothing.
+  private discardQueue(): void {
+    for (const item of this.queue) {
+      void item.audio?.then((src) => src && URL.revokeObjectURL(src)).catch(() => {});
+    }
+    this.queue = [];
+  }
+
+  private async speakNow(text: string, prefetched?: Promise<string | null>): Promise<void> {
     if (typeof window === "undefined") return;
+    // Claim the speaker BEFORE the first await. Everything below this line
+    // takes seconds, and a sentence arriving in the meantime must queue rather
+    // than assume the floor is free and start talking over this one.
+    const seq = ++this.speechSeq;
+    this.activeSpeech = seq;
     // HALF DUPLEX: the microphone is closed for as long as Aide is talking.
     // Leaving it open meant the recognizer transcribed Aide's own voice out of
     // the speakers and fed it back as if the user had said it. Echo
@@ -587,7 +759,10 @@ export class VoiceEngine {
     // instead (see the pointer/key listeners in start()).
     this.pauseRecognition();
     this.speaking = true;
-    this.currentSpeechText = text;
+    // Remember it for looksLikeEcho(). Only the last few utterances can
+    // possibly still be in the air, so the rest is dropped.
+    this.recentSpeech.push(text);
+    if (this.recentSpeech.length > 3) this.recentSpeech.shift();
     this.handlers.onState({ speaking: true });
 
     // Stop any running neural audio
@@ -602,23 +777,27 @@ export class VoiceEngine {
     // primed while the previous one spoke, its audio is here (or nearly here)
     // already, so the two run back to back with no audible seam.
     try {
-      const pending = this.prefetch?.text === text ? this.prefetch.audio : this.fetchSpeech(text);
-      this.prefetch = null;
+      // Either this sentence was already being synthesized while the previous
+      // one played, or it starts now.
+      const pending = prefetched ?? this.fetchSpeech(text);
 
       // The moment we know what is playing, start fetching what comes next.
-      this.primeNext();
+      this.primeQueue();
 
       const src = await pending;
-      if (src === null) {
-        console.warn("Neural TTS unavailable for this sentence — using the browser voice.");
-        this.speakWithBrowserVoice(text);
+
+      // A newer utterance took the floor while this audio downloaded (an
+      // interrupt, or a fresh reply) — drop it rather than talk over them.
+      // Checked before the null branch so a superseded failure cannot drag
+      // the browser voice in on top of whatever is now speaking.
+      if (this.activeSpeech !== seq) {
+        if (src) URL.revokeObjectURL(src);
         return;
       }
 
-      // A newer utterance superseded this one while its audio downloaded
-      // (an interrupt, or a fresh reply) — drop it rather than talk over them.
-      if (this.currentSpeechText !== text) {
-        URL.revokeObjectURL(src);
+      if (src === null) {
+        console.warn("Neural TTS unavailable for this sentence — using the browser voice.");
+        this.speakWithBrowserVoice(text, seq);
         return;
       }
 
@@ -641,7 +820,7 @@ export class VoiceEngine {
         console.warn("Neural audio playback failed — falling back to the browser voice.");
         const wasCurrent = this.currentAudio === audio;
         release();
-        if (wasCurrent) this.speakWithBrowserVoice(text);
+        if (wasCurrent) this.speakWithBrowserVoice(text, seq);
       };
 
       await audio.play();
@@ -654,6 +833,9 @@ export class VoiceEngine {
         console.info("Speech blocked before first interaction — will replay on tap.");
         this.pendingSpeech = text;
         this.speaking = false;
+        // Release the floor, or every later sentence queues behind a turn
+        // that will never finish and the reply is lost.
+        if (this.activeSpeech === seq) this.activeSpeech = 0;
         this.handlers.onState({ speaking: false });
         // Speaking was paused for a sentence that never played, so nothing
         // would reopen the mic. The user can still talk to Aide even if they
@@ -662,14 +844,21 @@ export class VoiceEngine {
         if (this.active) this.startRecognition();
         return;
       }
+      if (this.activeSpeech !== seq) return; // superseded while failing
       console.warn("Neural TTS failed, falling back to browser-native:", err);
-      this.speakWithBrowserVoice(text);
+      this.speakWithBrowserVoice(text, seq);
     }
   }
 
   // Browser-native SpeechSynthesis fallback.
-  private speakWithBrowserVoice(text: string): void {
-    if (!window.speechSynthesis) return;
+  private speakWithBrowserVoice(text: string, seq: number): void {
+    // No synthesis at all in this browser. Hand the floor on rather than
+    // returning holding it — otherwise the rest of the reply queues behind a
+    // sentence that can never finish, and nothing more is ever spoken.
+    if (!window.speechSynthesis) {
+      this.finishOrNext();
+      return;
+    }
 
     const u = new SpeechSynthesisUtterance(forSpeech(text));
     const voice = getBestNativeVoice(window.speechSynthesis);
@@ -692,7 +881,7 @@ export class VoiceEngine {
     const resumeNative = () => {
       if (startWatchdog) clearTimeout(startWatchdog);
       if (runawayWatchdog) clearTimeout(runawayWatchdog);
-      if (this.currentUtter !== u) return; // superseded
+      if (this.currentUtter !== u || this.activeSpeech !== seq) return; // superseded
       this.currentUtter = null;
       this.finishOrNext();
     };
@@ -754,6 +943,17 @@ export function forSpeech(text: string): string {
       .replace(/,\s*,/g, ",")
       .trim()
   );
+}
+
+// Flatten text to bare lowercase words for the echo comparison. Punctuation
+// and casing never survive the round trip through a speaker and a recognizer,
+// so matching on them would only produce misses.
+function normalizeForMatch(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getBestNativeVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {

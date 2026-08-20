@@ -475,7 +475,7 @@ export function makeTools(account: Account) {
           return { ok: false, message: "Messaging opens once the worker is hired for this gig." };
         }
         const messages = (await store.listMessages(jobId)).map((m) => ({ from: m.from, author: m.authorName, text: m.text }));
-        return { ok: true, gig: job.title, messages };
+        return { ok: true, jobId, gig: job.title, messages };
       },
     }),
 
@@ -498,7 +498,7 @@ export function makeTools(account: Account) {
         if (!text.trim()) return { ok: false, message: "There is no message to send." };
         const from = account.role === "employer" ? ("employer" as const) : ("worker" as const);
         await store.sendMessage(jobId, from, account.name, text);
-        return { ok: true, gig: job.title, sent: text.trim() };
+        return { ok: true, jobId, gig: job.title, sent: text.trim() };
       },
     }),
   };

@@ -131,6 +131,13 @@ export async function POST(req: Request) {
         let navigateTo: string | undefined;
         const opened = toolResults.find((t) => t.toolName === "open_page")?.result;
         if (opened?.page) navigateTo = routes[opened.page] + (opened.section ? `#${opened.section}` : "");
+        // Reading or sending a message opens that gig's thread on screen —
+        // the threads are collapsed by default, so without this Aide would be
+        // narrating a conversation the user cannot see.
+        const thread = toolResults.find(
+          (t) => (t.toolName === "read_messages" || t.toolName === "send_message") && t.result?.ok,
+        )?.result;
+        if (thread?.jobId) navigateTo = "/jobs?thread=" + thread.jobId + "#onboarding";
         const started = toolResults.find((t) => t.toolName === "start_assessment")?.result;
         if (started?.ok && started.jobId) navigateTo = `/jobs?assessment=${started.jobId}`;
         const filtered = toolResults.find((t) => t.toolName === "filter_jobs")?.result;

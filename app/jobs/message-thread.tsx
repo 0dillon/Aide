@@ -31,7 +31,26 @@ const time = (at: number) => {
   }
 };
 
-export function MessageThread({ jobId, role }: { jobId: string; role: "worker" | "employer" }) {
+// The speech-bubble marker on a collapsed thread. Purely decorative — the
+// button's own text is what a screen reader announces.
+export function MessageIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-7 w-7 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-4-.9L3 21l1.9-4.6A8.4 8.4 0 0 1 4 11.5a8.4 8.4 0 0 1 8.5-8.4h.5a8.4 8.4 0 0 1 8 8.4z" />
+    </svg>
+  );
+}
+
+export function MessageThread({ jobId, role, id }: { jobId: string; role: "worker" | "employer"; id?: string }) {
   const messages = useQuery(api.messages.listForJob, { jobId }) as Message[] | undefined;
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -72,7 +91,7 @@ export function MessageThread({ jobId, role }: { jobId: string; role: "worker" |
   };
 
   return (
-    <section aria-label={`Onboarding messages with ${otherParty}`} className="mt-4 rounded-lg border-2 border-[var(--line)] bg-[var(--paper)] p-4">
+    <section id={id} aria-label={`Onboarding messages with ${otherParty}`} className="rounded-b-lg border-t-2 border-[var(--line)] bg-[var(--paper)] p-4">
       <h4 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Onboarding messages</h4>
       <p className="mt-1 text-sm text-[var(--ink-soft)]">{hint}</p>
 

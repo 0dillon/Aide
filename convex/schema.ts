@@ -32,6 +32,12 @@ export default defineSchema({
     createdAt: v.number(),
     skills: v.array(v.string()),
     bio: v.string(),
+    // Durable facts the user has asked Aide to remember ("I can only work
+    // mornings"). Deliberately separate from the conversation: the transcript
+    // is a verbatim log and is no longer persisted anywhere, while these are
+    // the few things worth keeping — said once, and still here tomorrow.
+    // Optional so accounts written before this field existed still validate.
+    preferences: v.optional(v.array(v.string())),
     passwordHash: v.optional(v.string()), // never leaves the server
   })
     .index("by_key", ["key"])

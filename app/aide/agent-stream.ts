@@ -18,23 +18,48 @@ export type AgentStreamHandlers = {
   onSentence: (sentence: string) => void;
 };
 
+// What separates one sentence from the next. Three forms, and the last two
+// matter more than they look:
+//   ". "  — the ordinary case.
+//   ".A"  — no space at all. The SDK concatenates the text a model emits
+//           before a tool call with the text it emits after, and the join has
+//           no separator, giving "...for you.I found...". Left alone the
+//           neural voice reads that period aloud as "dot", the way it would
+//           in a domain name.
+//   ".$"  — punctuation at the end of the buffer, nothing after it yet. This
+//           is how a reply's opening line arrives: it is the last thing said
+//           before the tool runs, so it has no trailing space and, without
+//           this, sat unspoken until the tool came back. The opener exists
+//           precisely to cover that pause, so waiting for the tool to finish
+//           defeated the whole point and left the user in silence.
+const SENTENCE_END = /[.!?…](\s+|(?=[A-Z"'“‘])|$)/;
+
 // Pull complete sentences off the front of `buffer`. Refuses to break on
 // list markers like "1." or fragments with no words yet (decimals, initials).
 export function extractSentences(buffer: string): { sentences: string[]; rest: string } {
   const sentences: string[] = [];
   let rest = buffer;
-  let m: RegExpExecArray | null;
   let searchFrom = 0;
-  while ((m = /[.!?…]\s+/.exec(rest.slice(searchFrom)))) {
-    const end = searchFrom + m.index + 1;
-    const sentence = rest.slice(0, end).trim();
-    if (/(^|\s)\d+[.!?…]$/.test(sentence) || sentence.replace(/[^a-zA-Z]/g, "").length < 3) {
-      searchFrom = end + m[0].length - 1;
+  for (;;) {
+    const m = SENTENCE_END.exec(rest.slice(searchFrom));
+    if (!m) break;
+    const punctAt = searchFrom + m.index; // index of the punctuation itself
+    const sentence = rest.slice(0, punctAt + 1).trim();
+    // The no-space form is the risky one: it is also what an initialism looks
+    // like ("U.S.A"). Only trust it when a lowercase letter ends the word, as
+    // it does in a real join like "you.I" but never in "U.S".
+    const joinedNoSpace = m[1] === "" && punctAt + 1 < rest.length;
+    if (joinedNoSpace && !/[a-z]/.test(rest[punctAt - 1] ?? "")) {
+      searchFrom = punctAt + 1;
       continue;
     }
-    rest = rest.slice(searchFrom + m.index + m[0].length);
+    if (/(^|\s)\d+[.!?…]$/.test(sentence) || sentence.replace(/[^a-zA-Z]/g, "").length < 3) {
+      searchFrom = punctAt + 1; // a list marker or an initial — keep looking
+      continue;
+    }
+    rest = rest.slice(punctAt + m[0].length);
     searchFrom = 0;
-    if (sentence) sentences.push(sentence);
+    sentences.push(sentence);
   }
   return { sentences, rest };
 }

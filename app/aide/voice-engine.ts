@@ -293,7 +293,12 @@ export class VoiceEngine {
 
   // Queue a sentence behind whatever is already being said.
   queueSpeak(text: string): void {
-    if (this.replyAbandoned) return; // user cut this reply off
+    if (this.replyAbandoned) {
+      // Expected after a deliberate interrupt, but it is also the one way a
+      // sentence disappears with nothing played and nothing logged — so say so.
+      console.info("Aide speech: dropped, reply was interrupted:", text.slice(0, 60));
+      return;
+    }
     // Real words arrived in time — no need to stall.
     if (this.ackTimer) {
       clearTimeout(this.ackTimer);
@@ -792,6 +797,9 @@ export class VoiceEngine {
       // the browser voice in on top of whatever is now speaking.
       if (this.activeSpeech !== seq) {
         if (src) URL.revokeObjectURL(src);
+        // The other silent-drop path. If a sentence ever goes missing again,
+        // this line names it and says the audio was ready but unwanted.
+        console.info("Aide speech: dropped, superseded while loading:", text.slice(0, 60));
         return;
       }
 
@@ -930,6 +938,12 @@ export function forSpeech(text: string): string {
       .replace(/(?:₦|NGN)\s*([\d,]+(?:\.\d+)?)/gi, (_, n) => `${String(n).replace(/,/g, "")} naira`)
       // Thousands separators otherwise get spelled out digit by digit.
       .replace(/\b(\d{1,3})(?:,(\d{3}))+\b/g, (m) => m.replace(/,/g, ""))
+      // Restore the space the SDK drops when it joins the text a model emits
+      // either side of a tool call ("...for you.I found..."). Without it the
+      // neural voice treats "you.I" as one token and reads the period out
+      // loud as "dot". Anchored on a lowercase letter before the punctuation
+      // so initialisms like "U.S.A" are left intact.
+      .replace(/([a-z][.!?…])([A-Z])/g, "$1 $2")
       // Dashes used as punctuation become a comma's worth of pause.
       .replace(/\s*[—–]\s*/g, ", ")
       // A hyphen between words is a pause too; keep hyphenated words intact.

@@ -90,3 +90,51 @@ export const seedDefaults = mutation({
     }
   },
 });
+
+// --- Preferences: the durable half of Aide's memory ---
+//
+// The conversation transcript is not persisted anywhere any more, so anything
+// worth having next time has to be stated as a preference and kept here, on
+// the account. Unlike the old sessionStorage transcript — which died with the
+// browser tab — this survives reloads, new tabs, and tomorrow.
+
+// Every preference is injected into the model's prompt on every turn, so this
+// cap is a token budget as much as a storage one.
+const MAX_PREFERENCES = 30;
+
+export const addPreference = mutation({
+  args: { key: v.string(), text: v.string() },
+  handler: async (ctx, { key, text }) => {
+    const acc = await ctx.db.query("accounts").withIndex("by_key", (q) => q.eq("key", key)).first();
+    if (!acc) return { ok: false as const, message: "No account with that id." };
+    const clean = text.trim();
+    if (!clean) return { ok: false as const, message: "There is nothing to remember." };
+    const current = acc.preferences ?? [];
+    // Saying the same thing twice must not produce two entries.
+    if (current.some((p) => p.toLowerCase() === clean.toLowerCase())) {
+      return { ok: true as const, added: false, preferences: current };
+    }
+    const next = [...current, clean].slice(-MAX_PREFERENCES);
+    await ctx.db.patch(acc._id, { preferences: next });
+    return { ok: true as const, added: true, preferences: next };
+  },
+});
+
+export const removePreference = mutation({
+  args: { key: v.string(), text: v.string() },
+  handler: async (ctx, { key, text }) => {
+    const acc = await ctx.db.query("accounts").withIndex("by_key", (q) => q.eq("key", key)).first();
+    if (!acc) return { ok: false as const, message: "No account with that id." };
+    const needle = text.trim().toLowerCase();
+    if (!needle) return { ok: false as const, message: "There is nothing to forget." };
+    const current = acc.preferences ?? [];
+    // Matched loosely on purpose: someone speaking will paraphrase what they
+    // want dropped rather than quote it back word for word.
+    const next = current.filter((p) => !p.toLowerCase().includes(needle));
+    if (next.length === current.length) {
+      return { ok: false as const, message: "No saved preference matches that." };
+    }
+    await ctx.db.patch(acc._id, { preferences: next });
+    return { ok: true as const, removed: current.length - next.length, preferences: next };
+  },
+});

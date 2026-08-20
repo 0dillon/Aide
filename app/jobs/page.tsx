@@ -6,7 +6,7 @@ import { useAide } from "../aide";
 import { AssessmentPanel } from "./assessment-panel";
 import { EmployerGigs } from "./employer-gigs";
 import { ExternalJobsSection } from "./external-jobs";
-import { MessageThread } from "./message-thread";
+import { MessageIcon, MessageThread } from "./message-thread";
 import { naira, type Application, type AssessmentData, type AssessmentResult, type Job } from "./types";
 
 // The jobs screen. Workers see filterable listings, apply, and take
@@ -38,6 +38,10 @@ function JobsPageInner() {
   const [busyJob, setBusyJob] = useState<string | null>(null);
   const [assessment, setAssessment] = useState<AssessmentData | null>(null);
   const [result, setResult] = useState<AssessmentResult | null>(null);
+  // Onboarding threads start closed. Several hired gigs meant several open
+  // transcripts stacked on the page at once — a wall to scroll past, and a
+  // much longer wall to listen through. Null means every one is collapsed.
+  const [openThread, setOpenThread] = useState<string | null>(null);
 
   const { speak, endCapture } = useAide();
 
@@ -55,6 +59,14 @@ function JobsPageInner() {
     const r = searchParams.get("requiresAssessment");
     setFReq(r === "true" ? "yes" : r === "false" ? "no" : "any");
   }, [searchParams]);
+
+  // Asking Aide to read a thread opens that thread on screen, the same way
+  // starting an assessment opens the assessment — Aide's words and the screen
+  // stay on the same thing.
+  const threadParam = searchParams.get("thread");
+  useEffect(() => {
+    if (threadParam) setOpenThread(threadParam);
+  }, [threadParam]);
 
   const visibleJobs = jobs.filter((j) => {
     const kw = fKeyword.trim().toLowerCase();
@@ -227,23 +239,46 @@ function JobsPageInner() {
           <section id="onboarding" aria-label="Your hired jobs and onboarding messages" className="mt-8">
             <h2 className="text-2xl font-bold">You’re hired — onboarding</h2>
             <p className="mt-1 text-lg text-[var(--ink-soft)]">
-              For each job you’ve been hired for, your employer’s onboarding messages appear here. Say “Aide, read my
-              messages” to hear them, or reply below.
+              One card per job you’ve been hired for. Tap a card to open its messages, or say “Aide, read my messages”
+              and the right one opens itself.
             </p>
-            <ul className="mt-4 space-y-5">
+            <ul className="mt-4 space-y-4">
               {hired.map((a) => {
                 const job = jobs.find((j) => j.id === a.jobId);
+                const title = job?.title ?? "Your hired job";
+                const open = openThread === a.jobId;
+                const panelId = `onboarding-${a.jobId}`;
                 return (
                   <li key={a.jobId}>
-                    <article aria-label={`Onboarding for ${job?.title ?? "your job"}`} className="rounded-xl border-2 border-[var(--line)] bg-white p-6">
-                      <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <h3 className="text-xl font-bold">{job?.title ?? "Your hired job"}</h3>
-                        <span className="rounded-full border-2 border-[var(--good)] px-3 py-0.5 text-sm font-bold text-[var(--good)]">
-                          {a.status === "paid" ? "✓ Paid" : "✓ Hired"}
+                    <article aria-label={`Onboarding for ${title}`} className="overflow-hidden rounded-xl border-2 border-[var(--line)] bg-white">
+                      {/* Closed, this is the whole card: the gig, who it is
+                          with, and a message marker. Opening one closes any
+                          other, so there is only ever one transcript to read
+                          or listen through at a time. */}
+                      <button
+                        type="button"
+                        onClick={() => setOpenThread(open ? null : a.jobId)}
+                        aria-expanded={open}
+                        aria-controls={panelId}
+                        className="flex w-full cursor-pointer items-center gap-4 p-5 text-left hover:bg-[var(--paper)]"
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-baseline gap-2">
+                            <span className="text-xl font-bold">{title}</span>
+                            <span className="rounded-full border-2 border-[var(--good)] px-3 py-0.5 text-sm font-bold text-[var(--good)]">
+                              {a.status === "paid" ? "✓ Paid" : "✓ Hired"}
+                            </span>
+                          </span>
+                          {job?.employer && (
+                            <span className="mt-1 block text-[var(--ink-soft)]">Employer: {job.employer}</span>
+                          )}
                         </span>
-                      </div>
-                      {job?.employer && <p className="mt-1 text-[var(--ink-soft)]">Employer: {job.employer}</p>}
-                      <MessageThread jobId={a.jobId} role="worker" />
+                        <span className="flex shrink-0 items-center gap-2 text-[var(--accent)]">
+                          <MessageIcon />
+                          <span className="text-sm font-bold">{open ? "Hide" : "Messages"}</span>
+                        </span>
+                      </button>
+                      {open && <MessageThread id={panelId} jobId={a.jobId} role="worker" />}
                     </article>
                   </li>
                 );

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useAide } from "../aide";
-import { MessageThread } from "./message-thread";
+import { MessageIcon, MessageThread } from "./message-thread";
 import { PostGigModal } from "./post-gig-modal";
 import { naira, type Application, type Job } from "./types";
 
@@ -23,6 +23,8 @@ export function EmployerGigs({
   const { speak } = useAide();
   const [showPost, setShowPost] = useState(false);
   const [busyJob, setBusyJob] = useState<string | null>(null);
+  // One onboarding thread open at a time, closed by default.
+  const [openThread, setOpenThread] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const changeStatus = async (jobId: string, action: "hire" | "reject" | "pay") => {
@@ -197,9 +199,35 @@ export function EmployerGigs({
 
                           {/* The onboarding channel unlocks the moment the
                               worker is hired — this is where the employer hands
-                              over directives, credentials, and next steps. */}
+                              over directives, credentials, and next steps. It
+                              stays closed until asked for, so a page of gigs
+                              isn't a page of open transcripts. */}
                           {(app.status === "hired" || app.status === "paid") && (
-                            <MessageThread jobId={job.id} role="employer" />
+                            <div className="mt-4 overflow-hidden rounded-lg border-2 border-[var(--line)] bg-white">
+                              <button
+                                type="button"
+                                onClick={() => setOpenThread(openThread === job.id ? null : job.id)}
+                                aria-expanded={openThread === job.id}
+                                aria-controls={`employer-thread-${job.id}`}
+                                className="flex w-full cursor-pointer items-center gap-3 p-3 text-left hover:bg-[var(--paper)]"
+                              >
+                                <span className="text-[var(--accent)]">
+                                  <MessageIcon />
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block font-bold">Onboarding messages</span>
+                                  <span className="block truncate text-sm text-[var(--ink-soft)]">
+                                    {job.title} · {app.workerName || "Worker"}
+                                  </span>
+                                </span>
+                                <span className="shrink-0 text-sm font-bold text-[var(--accent)]">
+                                  {openThread === job.id ? "Hide" : "Open"}
+                                </span>
+                              </button>
+                              {openThread === job.id && (
+                                <MessageThread id={`employer-thread-${job.id}`} jobId={job.id} role="employer" />
+                              )}
+                            </div>
                           )}
                         </li>
                       ))}

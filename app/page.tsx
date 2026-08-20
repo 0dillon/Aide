@@ -179,6 +179,12 @@ function TypeFallback({ onSend, disabled }: { onSend: (t: string) => void; disab
         value={v}
         onChange={(e) => setV(e.target.value)}
         placeholder="…or type to Aide"
+        // Stop the browser keeping its own copy of everything typed here and
+        // offering it back as a dropdown later — on a shared machine that is
+        // a log of the user's requests, and a blind user cannot see it appear.
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
         className="min-h-12 flex-1 rounded-lg border-2 border-[var(--line)] bg-white px-4 py-3 text-[var(--ink)]"
         disabled={disabled}
       />

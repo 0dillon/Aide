@@ -46,33 +46,22 @@ export function useAide() {
 // strict mode does this).
 let greetedThisLoad = false;
 
-// The conversation survives a reload. Without this, refreshing wiped the
-// transcript AND the context the model is given, so Aide forgot everything
-// mid-task and greeted the user from scratch — punishing on a screen you
-// cannot see. Session storage keeps it to this tab and clears when it closes.
-const TRANSCRIPT_KEY = "aide-transcript";
-const MAX_SAVED = 40;
-
-// The transcript is keyed to the account that produced it. Restoring it for a
-// DIFFERENT signed-in account would leak one identity's conversation into
-// another's (and mute the fresh greeting + onboarding a new account must get),
-// so a saved transcript whose owner doesn't match is discarded, not restored.
-function loadTranscript(): { owner: string | null; messages: Msg[] } {
-  try {
-    const raw = sessionStorage.getItem(TRANSCRIPT_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed.owner === "string" && Array.isArray(parsed.messages)) {
-      return { owner: parsed.owner, messages: parsed.messages.filter((m: Msg) => m?.role && typeof m.content === "string") };
-    }
-    return { owner: null, messages: [] };
-  } catch {
-    return { owner: null, messages: [] };
-  }
-}
+// Nothing the user says is written to storage. The conversation lives in React
+// state for as long as the page is open and is gone the moment it reloads —
+// there is no transcript on disk to leak, inspect, or restore.
+//
+// What survives instead is narrower and deliberate: anything the user asks
+// Aide to remember is saved server-side against their account as a preference
+// (see remember_preference in lib/agent/tools.ts) and replayed into the
+// model's prompt on every turn. That is strictly better memory than the old
+// transcript, which never outlived the browser tab anyway.
+//
+// This key exists only to sweep up transcripts written by earlier builds.
+const LEGACY_TRANSCRIPT_KEY = "aide-transcript";
 
 export function clearSavedTranscript(): void {
   try {
-    sessionStorage.removeItem(TRANSCRIPT_KEY);
+    sessionStorage.removeItem(LEGACY_TRANSCRIPT_KEY);
   } catch {}
 }
 
@@ -232,27 +221,15 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
 
     if (!greetedThisLoad) {
       greetedThisLoad = true;
-      // Identity first, then transcript: the saved conversation is only
-      // restored for the SAME account that had it. Any other identity (fresh
-      // signup, login, switch, logout) starts clean with its own greeting —
-      // which is also what triggers new-account onboarding.
+      // Every load starts a fresh conversation — there is no stored transcript
+      // to restore, by design. Continuity comes from the preferences the user
+      // asked Aide to save, which the server replays into the prompt.
       fetch("/api/account")
         .then((r) => r.json().catch(() => ({})))
         .catch(() => null)
         .then((d) => {
-          const id: string | null = d?.id ?? null;
-          setAccountId(id);
-          const saved = loadTranscript();
-
-          if (id && saved.owner === id && saved.messages.length > 0) {
-            // Coming back to an existing conversation: restore it so the model
-            // still has the context, and say something short instead of running
-            // through the full introduction again.
-            setMessages(saved.messages);
-            engine.speak("Welcome back. I still have our conversation — carry on.");
-            return;
-          }
-
+          setAccountId(d?.id ?? null);
+          // Sweep up anything an earlier build left in storage.
           clearSavedTranscript();
           // Greet with real state: pending assessments, money to withdraw, jobs.
           fetch("/api/greeting")
@@ -291,20 +268,6 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     },
     [speak],
   );
-
-  // Keep the saved transcript in step with what's on screen, capped so a long
-  // session can't outgrow the storage quota. Tagged with its owner so it is
-  // never restored for a different account. (The /api/account fetch that
-  // learns the id — and, server-side, starts the payment poller — happens in
-  // the greeting flow above.)
-  useEffect(() => {
-    if (messages.length === 0 || !accountId) return;
-    try {
-      sessionStorage.setItem(TRANSCRIPT_KEY, JSON.stringify({ owner: accountId, messages: messages.slice(-MAX_SAVED) }));
-    } catch {
-      /* private mode or quota — the conversation just won't survive a reload */
-    }
-  }, [messages, accountId]);
 
   const beginCapture = useCallback((onText: (t: string) => void) => {
     captureRef.current = onText;

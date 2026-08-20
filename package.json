@@ -12,7 +12,9 @@
     "inbound": "tsx src/inbound.ts",
     "proof": "tsx src/proof.ts",
     "webhook": "tsx src/webhook.ts",
-    "balance": "tsx src/balance.ts"
+    "balance": "tsx src/balance.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^0.2.16",
@@ -26,14 +28,17 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "convex-test": "^0.0.56",
     "tailwindcss": "^4.1.0",
     "tsx": "^4.16.0",
-    "typescript": "^5.5.3"
+    "typescript": "^5.5.3",
+    "vitest": "^4.1.11"
   }
 }

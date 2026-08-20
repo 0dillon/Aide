@@ -16,6 +16,7 @@ type ConvexAccount = {
   passwordHash?: string;
   skills: string[];
   bio: string;
+  preferences?: string[];
   createdAt: number;
 };
 
@@ -28,6 +29,7 @@ function toAccount(a: ConvexAccount): Account {
     passwordHash: a.passwordHash,
     skills: a.skills,
     bio: a.bio,
+    preferences: a.preferences ?? [],
     createdAt: a.createdAt,
   };
 }
@@ -42,6 +44,7 @@ const FALLBACK_WORKER: Account = {
   createdAt: Date.now(),
   skills: [...worker.skills],
   bio: worker.bio,
+  preferences: [],
 };
 
 // The only shape of an account that may be serialized to the browser.
@@ -92,6 +95,20 @@ export async function listAccounts(): Promise<Account[]> {
 
 export async function hasAccount(id: string): Promise<boolean> {
   return !!(await convexClient().query(api.accounts.getByKey, { key: id }));
+}
+
+// Aide's only durable memory. Everything else it is told lives in the request
+// and is gone when the tab closes, so a standing preference has to come here.
+export async function addPreference(accountId: string, text: string) {
+  return (await convexClient().mutation(api.accounts.addPreference, { key: accountId, text })) as
+    | { ok: false; message: string }
+    | { ok: true; added: boolean; preferences: string[] };
+}
+
+export async function removePreference(accountId: string, text: string) {
+  return (await convexClient().mutation(api.accounts.removePreference, { key: accountId, text })) as
+    | { ok: false; message: string }
+    | { ok: true; removed: number; preferences: string[] };
 }
 
 export function getWorker(): Worker {

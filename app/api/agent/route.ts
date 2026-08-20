@@ -78,9 +78,19 @@ export async function POST(req: Request) {
   // cannot see that, endless silence is indistinguishable from a dead app, so
   // the failure has to be captured and spoken.
   const failure: { error: Error | null } = { error: null };
+  // Aide's durable memory, restated on every turn. Cheaper and far more
+  // reliable than making the model call a tool to find out what it knows —
+  // and since the transcript is no longer persisted anywhere, this is the
+  // only thing carrying context in from an earlier session.
+  const saved = account.preferences ?? [];
+  const memory =
+    saved.length > 0
+      ? `\n- Things ${account.name} has asked you to remember: ${saved.map((p) => `"${p}"`).join("; ")}.`
+      : "\n- You have nothing saved about this user yet.";
+
   const result = streamText({
     model: deepseek(MODEL),
-    system: `${SYSTEM_PROMPT}\n- The current user is ${account.name}, signed in with a ${account.role} account.`,
+    system: `${SYSTEM_PROMPT}\n- The current user is ${account.name}, signed in with a ${account.role} account.${memory}`,
     messages,
     tools: makeTools(account),
     maxSteps: 6,

@@ -432,6 +432,35 @@ export function makeTools(account: Account) {
       },
     }),
 
+    remember_preference: tool({
+      description:
+        "Remember one thing about this user permanently. Use it whenever they ask you to remember something, or state a standing preference in passing — 'I can only work mornings', 'don't offer me phone support', 'read amounts back slowly'. The conversation itself is never saved, so this is the ONLY way anything survives until next time: if it is worth knowing tomorrow, it has to go here. Save one short fact in their own words, and say briefly that you'll remember it.",
+      parameters: z.object({
+        text: z.string().describe("the preference as one short sentence, in the user's own words"),
+      }),
+      execute: async ({ text }) => {
+        const r = await store.addPreference(account.id, text);
+        if (!r.ok) return { ok: false, message: r.message };
+        return {
+          ok: true,
+          saved: r.added,
+          preferences: r.preferences,
+          message: r.added ? "Saved — I'll remember that." : "That was already remembered.",
+        };
+      },
+    }),
+
+    forget_preference: tool({
+      description:
+        "Delete something the user previously asked you to remember, when they say to forget it or that it no longer applies. Pass roughly what they said — the match is loose. Confirm aloud what was forgotten.",
+      parameters: z.object({ text: z.string().describe("the preference to forget, as the user described it") }),
+      execute: async ({ text }) => {
+        const r = await store.removePreference(account.id, text);
+        if (!r.ok) return { ok: false, message: r.message };
+        return { ok: true, forgotten: r.removed, preferences: r.preferences };
+      },
+    }),
+
     read_messages: tool({
       description:
         "Read aloud the onboarding message thread for a hired gig. This channel opens only after the worker is hired. For a worker it is their onboarding conversation with the employer; for an employer it is the channel with the worker they hired. Pass the jobId — for workers, the jobId of a hired application (get_applications); for employers, a gig they hired on (review_applicants). Read each message with who sent it.",

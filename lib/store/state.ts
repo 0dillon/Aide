@@ -59,6 +59,9 @@ export type Account = {
   // spoken onboarding to fill these, or they can be edited on the profile page.
   skills: string[];
   bio: string;
+  // Durable facts the user asked Aide to remember. The conversation itself is
+  // never stored, so this is the only thing that survives the browser tab.
+  preferences?: string[];
   // Present on real credentialed accounts; absent on the passwordless demo
   // identities. Never leaves the server — always strip via publicAccount().
   passwordHash?: string;

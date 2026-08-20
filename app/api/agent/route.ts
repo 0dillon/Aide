@@ -13,6 +13,37 @@ const MODEL = process.env.AIDE_MODEL ?? "deepseek-chat";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
+// Ceiling on how long the post-stream metadata may take before the reply is
+// sent without it.
+const STEPS_TIMEOUT_MS = 5000;
+
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+// Aide reads this out, so it has to mean something when heard rather than
+// read. The raw provider text ("Authentication Fails, Your api key: ****0000
+// is invalid") tells the user nothing about what to do next.
+function spokenError(e: Error): string {
+  const raw = e?.message ?? "";
+  if (/authentication|api[- ]?key|401|unauthorized/i.test(raw)) {
+    return "My language model rejected its API key, so I can't answer yet. The DEEPSEEK_API_KEY in the server's .env file needs a valid key.";
+  }
+  if (/rate.?limit|429|too many requests/i.test(raw)) {
+    return "My language model is rate limited right now. Please try again in a moment.";
+  }
+  if (/insufficient|balance|quota|payment|402/i.test(raw)) {
+    return "My language model account is out of credit, so I can't answer until it is topped up.";
+  }
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(raw)) {
+    return "I couldn't reach my language model. Check the internet connection and try again.";
+  }
+  return raw || "Something went wrong reaching my language model.";
+}
+
 // Streams the reply as newline-delimited JSON so the browser can start
 // speaking the first sentence while the rest is still generating:
 //   { t: "delta", text }                        — a chunk of the reply text
@@ -37,12 +68,26 @@ export async function POST(req: Request) {
   }
 
   const account = await getAccount(userIdFrom(req));
+
+  // streamText does NOT throw when the model call fails. It reports the error
+  // here, ends textStream without emitting anything, and leaves result.steps
+  // permanently unsettled — so the `catch` below never fires and the response
+  // is never closed. That turned any upstream failure (rejected key, rate
+  // limit, no credit) into a connection that streamed nothing forever, which
+  // the browser renders as "Aide is thinking" with no way out. To a user who
+  // cannot see that, endless silence is indistinguishable from a dead app, so
+  // the failure has to be captured and spoken.
+  const failure: { error: Error | null } = { error: null };
   const result = streamText({
     model: deepseek(MODEL),
     system: `${SYSTEM_PROMPT}\n- The current user is ${account.name}, signed in with a ${account.role} account.`,
     messages,
     tools: makeTools(account),
     maxSteps: 6,
+    onError: ({ error }) => {
+      failure.error = error instanceof Error ? error : new Error(String(error));
+      console.error("[agent] model call failed:", failure.error.message);
+    },
   });
 
   const encoder = new TextEncoder();
@@ -55,8 +100,13 @@ export async function POST(req: Request) {
         for await (const text of result.textStream) {
           if (text) emit(controller, { t: "delta", text });
         }
+        // An empty stream means failure, not a short reply — see above.
+        if (failure.error) throw failure.error;
 
-        const steps = await result.steps;
+        // result.steps is also left unsettled by a half-failed call, so it is
+        // raced against a deadline. Losing the navigation hint degrades the
+        // reply; never closing the response breaks Aide outright.
+        const steps = await withDeadline(result.steps, STEPS_TIMEOUT_MS, []);
         const toolResults = steps.flatMap(
           (s) =>
             s.toolResults as {
@@ -94,7 +144,7 @@ export async function POST(req: Request) {
 
         emit(controller, { t: "done", navigateTo, newUserId, loggedOut, state: await snapshot(account.id) });
       } catch (e) {
-        emit(controller, { t: "error", message: (e as Error).message });
+        emit(controller, { t: "error", message: spokenError(e as Error) });
       }
       controller.close();
     },

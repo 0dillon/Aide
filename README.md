@@ -380,6 +380,24 @@ contrast.
   speech and incoming messages are announced automatically, `role="alert"` on errors,
   properly associated `<label>`s on every control, and a skip-to-content link.
 
+### Controls with no target to find
+
+A mute button is only a control if you can find it. These three do the same job without
+one, and each announces itself aloud, because a state change a user cannot see or hear is
+a state change they have to guess at.
+
+| Gesture | What happens |
+|---|---|
+| **Tap anywhere, or press any key** | Cuts Aide off mid-sentence. Nothing to aim at — a blind user should not have to hunt for a stop button while being talked over. |
+| **Tap three times** | Closes the microphone and keeps it closed. Aide says so, and says how to come back, since that sentence is the last thing heard before it goes quiet. Three more taps reopen it. Two would be too easy to do by accident; three is not. |
+| **Say nothing for 90 seconds** | Aide closes the mic itself and says it is doing so, rather than streaming an empty room indefinitely. Any tap or key wakes it. |
+
+The held state is enforced at the single function that can open the microphone, not at each
+of its callers, so a tab regaining focus, a reply finishing, or a recognizer restarting
+cannot quietly undo it. The input-level meter releases its own capture stream at the same
+time — otherwise the browser's recording indicator stays lit and "I've stopped listening"
+is a lie.
+
 The throughline: **redundancy**. Text, shape, contrast, and voice each carry the meaning on
 their own, so no single sensory channel is load-bearing — which is what lets one interface
 serve blind, low-vision, and colorblind users at the same time.

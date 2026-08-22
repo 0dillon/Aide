@@ -19,6 +19,10 @@ export type VoiceState = {
   // Mic deliberately closed after a stretch of silence. Not an error — Aide is
   // waiting to be woken, and any tap or key press brings it back.
   dormant: boolean;
+  // Mic deliberately closed by the USER, with three quick taps. Unlike
+  // `dormant`, no ordinary gesture undoes this — only three more taps. That is
+  // the point: a hold that a stray touch could lift would not be a hold.
+  muted: boolean;
   interim: string;
   micStatus: string;
   error: string | null;
@@ -78,6 +82,64 @@ const FILLER_MIN_WAIT_MS = 1500;
 // listened to. After this much quiet Aide closes the mic and waits to be woken.
 const IDLE_SLEEP_MS = 90_000;
 const SLEEP_NOTICE = "I'll stop listening for now. Tap the screen or press any key when you want me.";
+
+// Three quick taps hold the microphone closed; three more reopen it.
+//
+// A sighted user reaches for a mute button. There is no button a blind user
+// can find without being told where it is, and telling them costs a sentence
+// every session. A count of taps needs no target at all — anywhere on the
+// screen or the trackpad, on the surface their hand is already resting on.
+// Three rather than two, because a double tap is something a hand does by
+// accident and a triple tap is not.
+//
+// The gap is the maximum time BETWEEN taps, not for the run as a whole, so a
+// deliberate but unhurried three taps still counts. It is a little longer than
+// a system double-click interval — the users this is for do not rush a gesture
+// they cannot see the result of.
+export const TRIPLE_TAP_GAP_MS = 600;
+export const TAPS_TO_TOGGLE = 3;
+// A pointerdown is followed by a click, and on the Aide orb that click is
+// wired to interrupt(). Left alone, the third tap of a run would announce the
+// hold and then immediately cut its own announcement off mid-word. Long
+// enough to cover the click, short enough that a user who wants to talk over
+// the notice barely waits.
+const TOGGLE_CLICK_GRACE_MS = 400;
+
+// Both notices are FIXED strings, like the thinking fillers, so the long
+// Cache-Control on the speech endpoint applies and they come back instantly —
+// a mute that takes three seconds to confirm feels broken.
+//
+// The mute notice has to carry the way back inside it. It is the last thing
+// the user hears before Aide goes quiet, and if they forget the gesture there
+// is nothing on screen to remind them.
+export const MUTE_NOTICE = "That's three taps. I'll stop listening now. Tap three times again whenever you want me back.";
+export const UNMUTE_NOTICE = "I'm listening again. What can I help you with?";
+
+// The tap-run bookkeeping, kept free of the DOM so it can be tested directly.
+export class TapRun {
+  private taps = 0;
+  // "No previous tap" has to be a time nothing can be close to, not zero:
+  // zero is a perfectly good timestamp, and treating it as "never" silently
+  // dropped the first tap of any run that began at it.
+  private lastAt = Number.NEGATIVE_INFINITY;
+
+  // Returns true on the tap that completes a run.
+  register(now: number): boolean {
+    this.taps = now - this.lastAt <= TRIPLE_TAP_GAP_MS ? this.taps + 1 : 1;
+    this.lastAt = now;
+    if (this.taps < TAPS_TO_TOGGLE) return false;
+    // Start a fresh run rather than leaving a completed one armed — otherwise
+    // a fourth tap trailing the third would toggle straight back, and a hand
+    // resting on a trackpad could flip Aide's ears on and off.
+    this.reset();
+    return true;
+  }
+
+  reset(): void {
+    this.taps = 0;
+    this.lastAt = Number.NEGATIVE_INFINITY;
+  }
+}
 
 // Echo defence, part one: audio.onended fires when playback reaches the end
 // of the buffer, but the speaker and the room keep sounding briefly after
@@ -155,6 +217,16 @@ export class VoiceEngine {
   // reopens it, so Aide isn't streaming an empty room indefinitely.
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private dormant = false;
+  // Held by the user rather than by silence. Every path that could reopen the
+  // mic funnels through startRecognition(), so this is enforced in that one
+  // place instead of at each of its half-dozen callers.
+  private muted = false;
+  private taps = new TapRun();
+  private suppressInterruptUntil = 0;
+  // Whether this engine owns a recognizer at all. Browsers with no
+  // SpeechRecognition run in speak-only mode, where there is no microphone to
+  // hold and offering to close one would be a straight lie.
+  private canHear = false;
   private currentAudio: HTMLAudioElement | null = null;
   private currentUtter: SpeechSynthesisUtterance | null = null;
   // Speech Chrome blocked before the first user interaction, replayed on the
@@ -201,6 +273,7 @@ export class VoiceEngine {
 
   start(): void {
     this.active = true;
+    this.canHear = true;
     this.handlers.onState({ active: true });
     document.addEventListener("visibilitychange", this.onVisibility);
     window.addEventListener("pointerdown", this.unlock);
@@ -240,6 +313,7 @@ export class VoiceEngine {
     if (this.finalQuietTimer) clearTimeout(this.finalQuietTimer);
     this.finalQuietTimer = null;
     this.pendingFinalText = "";
+    this.taps.reset();
     this.detachRecognizer();
     this.stopAllSpeech();
   }
@@ -360,6 +434,9 @@ export class VoiceEngine {
 
   // Tap Aide while it talks — or say "aide stop talking" — to cut it off.
   interrupt(): void {
+    // The click that trails the third tap lands here whenever the run ended on
+    // the Aide orb, and would cut off the notice that same tap just started.
+    if (Date.now() < this.suppressInterruptUntil) return;
     this.discardQueue();
     this.activeSpeech = 0; // supersedes any synthesis still in flight
     // Whatever is still streaming from the model must not be spoken.
@@ -409,19 +486,30 @@ export class VoiceEngine {
   // shouldn't have to find a specific button, and with the mic closed during
   // speech there's no longer a spoken way to interrupt.
   private unlock = (e: Event) => {
+    // Three quick taps toggle listening, and that is decided before anything
+    // else here. The first two taps still do their ordinary job — a tap while
+    // Aide talks cuts it off — but the third is a command in its own right,
+    // and must not ALSO be read as "wake up" or "shut up".
+    //
+    // Pointers only. A triple keypress is just typing.
+    if (this.canHear && e.type === "pointerdown" && this.countsAsTap(e) && this.taps.register(Date.now())) {
+      this.toggleMuted();
+      return;
+    }
     const pending = this.pendingSpeech;
     if (pending) {
       this.pendingSpeech = null;
       this.speak(pending);
       return;
     }
-    // Asleep after a quiet spell — any gesture brings the mic back.
+    // Asleep after a quiet spell — any gesture brings the mic back. Being held
+    // by the user is not that, and must not be undone by a stray touch.
     if (this.dormant) {
-      this.wake();
+      if (!this.muted) this.wake();
       return;
     }
     if (!this.speaking) {
-      this.armIdleTimer(); // still around; don't nod off mid-interaction
+      if (!this.muted) this.armIdleTimer(); // still around; don't nod off mid-interaction
       return;
     }
     // Typing to Aide, or using a control, shouldn't count as "shut up".
@@ -429,6 +517,50 @@ export class VoiceEngine {
     if (el?.closest("input, textarea, select, button, a")) return;
     this.interrupt();
   };
+
+  // Where a tap counts toward the run. Text fields are out because a triple
+  // click there already means "select this line", and links because the first
+  // click has usually navigated away before the third one lands.
+  private countsAsTap(e: Event): boolean {
+    const el = e.target as HTMLElement | null;
+    return !el?.closest("input, textarea, select, a, [contenteditable='true']");
+  }
+
+  // Hold the mic closed, or hand it back. Announced either way: the whole
+  // state change is inaudible and invisible otherwise, and a user who is not
+  // sure whether Aide is listening will simply stop talking to it.
+  private toggleMuted(): void {
+    this.suppressInterruptUntil = Date.now() + TOGGLE_CLICK_GRACE_MS;
+    if (this.muted) {
+      this.muted = false;
+      this.handlers.onState({ muted: false, micStatus: "listening again…" });
+      // Notice first, mic second. speakNow() closes the mic for the duration
+      // and finishOrNext() reopens it once the words have finished playing, so
+      // Aide never hears itself announce this.
+      this.speakNow(UNMUTE_NOTICE);
+      return;
+    }
+    this.muted = true;
+    // Held and asleep are mutually exclusive: the sleep notice would talk over
+    // this one, and waking from it would reopen a mic the user just closed.
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.dormant = false;
+    // Drop any half-heard phrase with the mic. It was said to an Aide that is
+    // now being told to stop listening, and dispatching it after the fact
+    // would answer a question the user has already walked away from.
+    if (this.finalQuietTimer) clearTimeout(this.finalQuietTimer);
+    this.finalQuietTimer = null;
+    this.pendingFinalText = "";
+    this.pauseRecognition();
+    this.handlers.onState({
+      muted: true,
+      dormant: false,
+      interim: "",
+      micStatus: "not listening — tap three times to resume",
+    });
+    this.speakNow(MUTE_NOTICE);
+  }
 
   // --- Recognition ---
 
@@ -449,9 +581,13 @@ export class VoiceEngine {
   // finishes speaking — i.e. whenever the conversation is demonstrably alive.
   private armIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    // Nothing to nod off from — the user has already closed the mic, and
+    // announcing that Aide is going to sleep on top of that would be nonsense.
+    if (this.muted) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (!this.active || this.speaking || this.dormant) return;
+      if (!this.active || this.speaking || this.dormant || this.muted) return;
       this.dormant = true;
       this.pauseRecognition();
       this.handlers.onState({ dormant: true, micStatus: "asleep — tap to wake" });
@@ -462,7 +598,7 @@ export class VoiceEngine {
 
   // Bring the mic back after sleep. Triggered by any tap or key press.
   private wake(): void {
-    if (!this.dormant) return;
+    if (!this.dormant || this.muted) return;
     this.dormant = false;
     this.handlers.onState({ dormant: false, micStatus: "waking up…" });
     if (this.active) this.startRecognition();
@@ -541,7 +677,11 @@ export class VoiceEngine {
   // Create a FRESH recognizer each time — Chrome instances can wedge after
   // abort, and a new one is the reliable way back to a working mic.
   private startRecognition(): void {
-    if (!this.active || typeof window === "undefined") return;
+    // The one place the mic can open, which is why the hold is enforced here:
+    // interrupt(), finishOrNext(), the visibility handler and the restart
+    // backoff all arrive through this door, and every one of them would
+    // otherwise quietly undo a hold the user asked for.
+    if (!this.active || this.muted || typeof window === "undefined") return;
     const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!Ctor) return;
 
@@ -743,9 +883,9 @@ export class VoiceEngine {
     this.speaking = false;
     this.handlers.onState({ speaking: false });
     this.speechEndedAt = Date.now();
-    // Aide just finished the sleep announcement — stay asleep rather than
-    // reopening the mic it only just closed.
-    if (this.dormant) return;
+    // Aide just finished the sleep announcement, or the hold notice — stay
+    // closed rather than reopening the mic it only just closed.
+    if (this.dormant || this.muted) return;
     if (this.active) {
       // Let the speaker's decay pass before the mic reopens, rather than
       // racing it the instant playback ends. Kept very short so a user who

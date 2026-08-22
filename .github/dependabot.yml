@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Grouped and monthly on purpose: this is a small team, and a wall of open PRs
+  # gets ignored, which is worse than a slightly older lockfile. Security
+  # advisories still arrive immediately, separately from this schedule.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly

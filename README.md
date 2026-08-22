@@ -7,6 +7,8 @@ A worker talks; Aide does the rest — finds jobs, runs a spoken skill assessmen
 real bank account, confirms incoming pay, and reads the balance back aloud. No screen
 required.
 
+[![CI](https://github.com/David-Pjs/Aide/actions/workflows/ci.yml/badge.svg)](https://github.com/David-Pjs/Aide/actions/workflows/ci.yml)
+
 [**Live demo →** aide-ng.vercel.app](https://aide-ng.vercel.app) · Open in Chrome and just talk.
 
 ---
@@ -267,6 +269,26 @@ npm run balance    # wallet balance check
 ```
 
 `npm run proof` prints `SUCCESS` or the documented `PENDING_AUTHORIZATION` sandbox state
+
+### Continuous integration
+
+Every push and pull request runs five checks in parallel
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). They run against placeholder
+credentials, never a real provider — what they prove is the wiring, not the keys.
+
+| Check | What it protects |
+|---|---|
+| **Types** | `tsc --noEmit` across app, Convex functions, and tests. |
+| **Tests** | 267 tests over two vitest projects — plain Node for money, agent, and speech; an edge-runtime VM for the Convex functions, which is the only environment `convex-test` can drive. |
+| **Production build** | A full `next build`, so a route that only breaks when compiled cannot reach a deploy. |
+| **Speech worker** | Installs `edge-tts` and imports both speech entry points. A break here would otherwise reach a blind user as the robotic fallback voice, with nothing on screen to explain it. |
+| **No secrets committed** | Fails on a tracked `.env`, on local Convex state (it holds an admin key), or on anything shaped like a live credential. |
+
+Run the same gates locally:
+
+```bash
+npm run typecheck && npm test && npm run build
+```
 
 ### Troubleshooting
 

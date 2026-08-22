@@ -1,0 +1,108 @@
+name: CI
+
+# Aide moves real money and is driven by a model, for users who cannot see the
+# screen to notice something went wrong. Every push runs the same gates a
+# reviewer would run by hand, in parallel, so a red check is visible before a
+# merge rather than after a withdrawal.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # lib/env.ts refuses to load without these, so `next build` cannot even import
+  # the payment routes unless they are present. CI never reaches a real
+  # provider — placeholders are the point: they prove the wiring, not the keys.
+  MONNIFY_API_KEY: ci-placeholder
+  MONNIFY_SECRET_KEY: ci-placeholder
+  MONNIFY_CONTRACT_CODE: "0000000000"
+  DEEPSEEK_API_KEY: ci-placeholder
+  NEXT_PUBLIC_CONVEX_URL: https://ci-placeholder.convex.cloud
+
+jobs:
+  typecheck:
+    name: Types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Two vitest projects run here: plain Node for the money, agent and speech
+      # suites, and an edge-runtime VM for the Convex functions, which is the
+      # only environment convex-test can drive.
+      - run: npm test
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  speech:
+    name: Speech worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # The neural voice is not a nice-to-have here — it is the entire
+      # interface. Both speech entry points guard their entry behind
+      # __main__, so importing them is safe and proves more than a syntax
+      # check: that edge-tts still installs and that the names these files
+      # reach for still exist. A break here would otherwise reach the user as
+      # the robotic browser fallback voice, with nothing on screen to explain it.
+      - run: pip install -r requirements.txt
+      - name: Import both speech entry points
+        run: |
+          python -c "import sys; sys.path[:0] = ['scripts', 'api']; import tts_worker, speak"
+
+  secrets:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse tracked env files and local Convex state
+        run: |
+          bad=$(git ls-files | grep -E '^(\.env($|\..*)|\.convex/)' | grep -v '^\.env\.example$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::These must never be committed:"; echo "$bad"; exit 1
+          fi
+      - name: Refuse live-looking credentials
+        run: |
+          # .env.example carries placeholders only (MK_TEST_xxx, sk-xxxxxxxx),
+          # so these patterns match real keys and nothing else.
+          if git grep -nIE 'MK_PROD_[A-Za-z0-9]{6,}|sk-[A-Za-z0-9]{24,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . ':!.github/workflows/ci.yml'; then
+            echo "::error::A live-looking credential is committed."; exit 1
+          fi

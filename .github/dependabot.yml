@@ -11,6 +11,22 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    # Majors on these are breaking, not routine. The AI SDK dropped `maxSteps`
+    # (which the agent route relies on) between v4 and v5, and React, Next and
+    # Express majors all need a deliberate migration rather than a merge button.
+    ignore:
+      - dependency-name: "ai"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@ai-sdk/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "express"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

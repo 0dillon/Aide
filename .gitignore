@@ -27,3 +27,10 @@ tts-env/
 venv/
 .venv/
 .vercel
+
+# Throwaway build dirs used by side-by-side test servers (see AIDE_DIST_DIR)
+.next-*/
+
+# Python bytecode from the TTS worker / speak function
+__pycache__/
+*.pyc

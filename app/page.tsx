@@ -7,7 +7,9 @@ import { useAide } from "./aide";
 // recognition, so it shows whether the microphone is delivering ANY audio.
 // If this stays at zero while the user talks, Chrome is capturing the wrong
 // (or a muted) input device.
-function MicMeter({ dormant }: { dormant: boolean }) {
+// `closed` covers both ways the mic can be shut — asleep after a quiet spell,
+// or held closed by the user's three taps. Either way this must let go too.
+function MicMeter({ closed }: { closed: boolean }) {
   const [level, setLevel] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -15,7 +17,7 @@ function MicMeter({ dormant }: { dormant: boolean }) {
     // When Aide has stopped listening, this must let go of the microphone too.
     // Otherwise the meter keeps its own capture stream open, the browser's
     // recording indicator stays lit, and "Aide stopped listening" is a lie.
-    if (dormant) {
+    if (closed) {
       setLevel(null);
       return;
     }
@@ -47,7 +49,7 @@ function MicMeter({ dormant }: { dormant: boolean }) {
       stream?.getTracks().forEach((t) => t.stop());
       audioCtx?.close();
     };
-  }, [dormant]);
+  }, [closed]);
 
   if (failed) return <p className="text-sm font-bold text-[var(--alert)]">Mic check: could not open the microphone.</p>;
   if (level === null) return null;
@@ -66,14 +68,18 @@ function MicMeter({ dormant }: { dormant: boolean }) {
 // Aide's home: two halves. Left — Aide itself, always listening, glowing
 // while it speaks. Right — the running transcript of this session.
 export default function AidePage() {
-  const { active, listening, speaking, dormant, thinking, supported, interim, micStatus, error, messages, send, interrupt } = useAide();
+  const { active, listening, speaking, dormant, muted, thinking, supported, interim, micStatus, error, messages, send, interrupt } = useAide();
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [messages, interim]);
 
-  const status = dormant
+  // Held by the user outranks every other state: the orb must never read
+  // "Listening" while the mic is deliberately closed.
+  const status = muted
+    ? "Not listening"
+    : dormant
     ? "Asleep"
     : speaking
     ? "Speaking…"
@@ -98,9 +104,11 @@ export default function AidePage() {
         <button
           onClick={interrupt}
           aria-label={
-            dormant
-              ? "Aide has stopped listening. Tap to wake it."
-              : `Aide is ${status.toLowerCase().replace("…", "")}. Tap to interrupt Aide and speak.`
+            muted
+              ? "Aide is not listening. Tap three times anywhere to start it listening again."
+              : dormant
+                ? "Aide has stopped listening. Tap to wake it."
+                : `Aide is ${status.toLowerCase().replace("…", "")}. Tap to interrupt Aide and speak.`
           }
           className={`relative grid h-48 w-48 cursor-pointer place-items-center rounded-full bg-[var(--accent)] text-xl font-bold text-white shadow-xl transition-transform active:scale-95 ${
             speaking ? "aide-speaking" : ""
@@ -117,7 +125,17 @@ export default function AidePage() {
         </button>
 
         <p aria-live="polite" className="min-h-6 text-lg font-bold text-[var(--ink-soft)]">
-          {dormant ? "Aide stopped listening — tap anywhere to wake it" : speaking ? "Aide is speaking — tap anywhere to stop" : thinking ? "Aide is thinking" : listening ? "Aide is listening — just talk" : ""}
+          {muted
+            ? "Aide is not listening — tap three times anywhere to start again"
+            : dormant
+              ? "Aide stopped listening — tap anywhere to wake it"
+              : speaking
+                ? "Aide is speaking — tap anywhere to stop"
+                : thinking
+                  ? "Aide is thinking"
+                  : listening
+                    ? "Aide is listening — just talk"
+                    : ""}
         </p>
 
         <div className="min-h-16 max-w-lg text-center">
@@ -135,7 +153,7 @@ export default function AidePage() {
         {error && <p role="alert" className="max-w-md text-center text-[var(--alert)]">{error}</p>}
         {micStatus && <p className="max-w-md text-center text-sm text-[var(--ink-soft)]">Mic: {micStatus}</p>}
 
-        <MicMeter dormant={dormant} />
+        <MicMeter closed={dormant || muted} />
 
         <TypeFallback onSend={send} disabled={thinking} />
       </section>

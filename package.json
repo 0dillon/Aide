@@ -13,6 +13,7 @@
     "proof": "tsx src/proof.ts",
     "webhook": "tsx src/webhook.ts",
     "balance": "tsx src/balance.ts",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },

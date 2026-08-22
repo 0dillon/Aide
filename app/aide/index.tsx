@@ -20,6 +20,7 @@ type AideContextValue = {
   listening: boolean;
   speaking: boolean;
   dormant: boolean;
+  muted: boolean;
   thinking: boolean;
   capturing: boolean;
   supported: boolean;
@@ -77,6 +78,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
     listening: false,
     speaking: false,
     dormant: false,
+    muted: false,
     interim: "",
     micStatus: "starting…",
     error: null,
@@ -237,7 +239,9 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
             .catch(() => null)
             .then((data) => {
               const base = data?.greeting || "Hello, I'm Aide. I'm listening — just talk to me.";
-              const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key.`;
+              // The gesture has no visual affordance at all, so the only place a
+          // user can learn it is here. Kept to one clause, said once a session.
+          const greeting = `${base} By the way, you can stop me any time — just tap the screen or press any key. Tap three times if you'd like me to stop listening altogether.`;
               setMessages((m) => [...m, { role: "assistant", content: greeting }]);
               engine.speak(greeting);
             });
@@ -287,6 +291,7 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
         listening: voice.listening,
         speaking: voice.speaking,
         dormant: voice.dormant,
+        muted: voice.muted,
         thinking,
         capturing,
         supported,
@@ -338,17 +343,21 @@ function PaymentAlerts({
 // The small Aide that follows the user onto every other screen. It glows
 // while talking and pulses while listening; tapping it interrupts Aide.
 function MiniAide() {
-  const { listening, speaking, thinking, capturing, interim, messages, interrupt } = useAide();
+  const { listening, speaking, thinking, capturing, muted, interim, messages, interrupt } = useAide();
   const lastAide = [...messages].reverse().find((m) => m.role === "assistant")?.content;
-  const status = speaking
-    ? "Aide is speaking"
-    : thinking
-      ? "Aide is thinking"
-      : capturing
-        ? "Aide is writing down what you say"
-        : listening
-          ? "Aide is listening"
-          : "Aide is paused";
+  // Held beats everything below it. Announcing "Aide is listening" while the
+  // user has deliberately closed the mic is the one lie that matters here.
+  const status = muted
+    ? "Aide is not listening — tap three times to start again"
+    : speaking
+      ? "Aide is speaking"
+      : thinking
+        ? "Aide is thinking"
+        : capturing
+          ? "Aide is writing down what you say"
+          : listening
+            ? "Aide is listening"
+            : "Aide is paused";
 
   return (
     <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-2">

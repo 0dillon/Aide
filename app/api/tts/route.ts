@@ -35,7 +35,11 @@ const WORKER_SCRIPT = path.join(process.cwd(), "scripts", "tts_worker.py");
 // Per-request deadline once the worker has a request in flight. Generous,
 // because a cold worker's first request can take 6s+; a wedged worker is
 // killed and respawned rather than left to hang future requests forever.
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 30000;
+// A worker that dies is recoverable — a request is only text — so pending work
+// is replayed on a fresh process rather than failed. This caps the replaying,
+// so a process that dies instantly every time cannot spin forever.
+const MAX_ATTEMPTS = 2;
 
 const audioCache = new Map<string, Buffer>();
 const CACHE_MAX = 100;
@@ -47,20 +51,47 @@ const CACHE_MAX = 100;
 const BREAKER_COOLDOWN_MS = 30_000;
 let breakerOpenUntil = 0;
 
-type PendingRequest = { resolve: (buf: Buffer) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> };
+type PendingRequest = {
+  text: string;
+  voice: string;
+  resolve: (buf: Buffer) => void;
+  reject: (err: Error) => void;
+  attempts: number;
+};
 
 let worker: ChildProcessWithoutNullStreams | null = null;
 let queue: PendingRequest[] = [];
+let frontTimer: ReturnType<typeof setTimeout> | null = null;
 // Incoming stdout bytes for the request currently at the front of the queue.
 let recvBuf: Buffer = Buffer.alloc(0);
 let expectedLen: number | null = null;
 
+// The deadline belongs to the request the worker is actually SYNTHESIZING, not
+// to everything queued behind it. Starting the clock at enqueue meant a queued
+// request burned its whole budget waiting its turn: six warm-up phrases against
+// one serial worker was enough for the last few to time out having never been
+// touched, which killed the worker and took the greeting down with it, leaving
+// the browser to fall back to its robotic voice.
+function armFrontTimeout() {
+  if (frontTimer) clearTimeout(frontTimer);
+  frontTimer = null;
+  if (queue.length === 0) return;
+  frontTimer = setTimeout(() => {
+    frontTimer = null;
+    const proc = worker;
+    if (!proc) return;
+    // Genuinely wedged: kill it so the next request gets a fresh process.
+    proc.kill();
+    if (worker === proc) worker = null;
+  }, REQUEST_TIMEOUT_MS);
+}
+
 function settleFront(err: Error | null, audio?: Buffer) {
   const req = queue.shift();
   if (!req) return;
-  clearTimeout(req.timer);
   if (err) req.reject(err);
   else req.resolve(audio!);
+  armFrontTimeout(); // the next request starts its clock when its turn starts
 }
 
 function onWorkerData(chunk: Buffer) {
@@ -91,11 +122,22 @@ function spawnWorker(): ChildProcessWithoutNullStreams {
   proc.on("exit", (code) => {
     console.warn(`edge_tts worker exited (code ${code}) — will respawn on next request`);
     if (worker === proc) worker = null;
+    if (frontTimer) clearTimeout(frontTimer);
+    frontTimer = null;
     const pending = queue;
     queue = [];
+    // The framing protocol has no way to cancel a single request, so escaping a
+    // slow synthesis means killing the whole process — which used to reject
+    // every OTHER sentence queued behind it as well. A user hears that as Aide
+    // dropping to the robotic fallback voice partway through a reply, seemingly
+    // at random. A request is only text, so replay it instead of failing it.
     for (const req of pending) {
-      clearTimeout(req.timer);
-      req.reject(new Error("edge_tts worker exited unexpectedly"));
+      if (req.attempts + 1 < MAX_ATTEMPTS) {
+        req.attempts += 1;
+        dispatch(req);
+      } else {
+        req.reject(new Error("edge_tts worker exited repeatedly"));
+      }
     }
   });
   proc.on("error", (err) => {
@@ -126,18 +168,19 @@ if (process.env.NEXT_RUNTIME !== "edge" && !process.env.VERCEL) {
   });
 }
 
+// Hand one request to the worker. Separate from requestSynthesis so the exit
+// handler above can re-send work a dead process never finished.
+function dispatch(req: PendingRequest): void {
+  const proc = getWorker();
+  queue.push(req);
+  // Only whatever is at the front of the queue is on the clock.
+  if (queue.length === 1) armFrontTimeout();
+  proc.stdin.write(JSON.stringify({ text: req.text, voice: req.voice }) + "\n", "utf-8");
+}
+
 function requestSynthesis(text: string, voice: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const proc = getWorker();
-    const timer = setTimeout(() => {
-      // The worker is wedged — kill it so the NEXT request gets a fresh
-      // process instead of queuing behind a synthesis that will never finish.
-      proc.kill();
-      if (worker === proc) worker = null;
-    }, REQUEST_TIMEOUT_MS);
-
-    queue.push({ resolve, reject, timer });
-    proc.stdin.write(JSON.stringify({ text, voice }) + "\n", "utf-8");
+    dispatch({ text, voice, resolve, reject, attempts: 0 });
   });
 }
 

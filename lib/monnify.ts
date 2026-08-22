@@ -4,16 +4,55 @@ import { env } from "./env";
 type TokenCache = { token: string; expiresAt: number };
 let cached: TokenCache | null = null;
 
+// Fail fast rather than sitting on a connection that is not going to open. The
+// default is around ten seconds, which is a long time to hold a request that is
+// already doomed.
+const CALL_TIMEOUT_MS = 8000;
+
+// A provider outage is not news after the first time. Every failure used to
+// print the error object and its stack, so an unreachable host produced a wall
+// of identical traces every fifteen seconds and buried every other log on the
+// machine. Repeats now collapse into a counter, and recovery says so.
+const failing = new Map<string, { reason: string; count: number }>();
+
+function reasonOf(e: unknown): string {
+  const cause = (e as { cause?: { code?: string } })?.cause;
+  return cause?.code ?? (e as Error)?.message ?? "unknown error";
+}
+
+function noteFailure(path: string, e: unknown): void {
+  const reason = reasonOf(e);
+  const prev = failing.get(path);
+  if (prev?.reason === reason) {
+    prev.count += 1;
+    // Occasional reminders that it is still down, not one per attempt.
+    if (prev.count % 20 === 0) {
+      console.error(`[Monnify] ${path} still unreachable (${reason}) — ${prev.count} consecutive failures`);
+    }
+    return;
+  }
+  failing.set(path, { reason, count: 1 });
+  console.error(`[Monnify] ${path} failed: ${reason}`);
+}
+
+function noteSuccess(path: string): void {
+  const prev = failing.get(path);
+  if (!prev) return;
+  failing.delete(path);
+  console.info(`[Monnify] ${path} recovered after ${prev.count} failed attempt(s).`);
+}
+
 async function call<T>(path: string, init: RequestInit): Promise<T> {
   try {
-    const res = await fetch(`${env.baseUrl}${path}`, init);
+    const res = await fetch(`${env.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
     const body = (await res.json()) as { requestSuccessful: boolean; responseMessage: string; responseBody: T };
     if (!res.ok || !body.requestSuccessful) {
       throw new Error(`Monnify ${path} failed (${res.status}): ${body.responseMessage ?? "unknown error"}`);
     }
+    noteSuccess(path);
     return body.responseBody;
   } catch (e) {
-    console.error(`[Monnify API Error] Fetch to ${path} failed:`, e);
+    noteFailure(path, e);
     throw e;
   }
 }

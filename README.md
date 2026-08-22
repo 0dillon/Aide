@@ -7,6 +7,8 @@ A worker talks; Aide does the rest — finds jobs, runs a spoken skill assessmen
 real bank account, confirms incoming pay, and reads the balance back aloud. No screen
 required.
 
+[![CI](https://github.com/David-Pjs/Aide/actions/workflows/ci.yml/badge.svg)](https://github.com/David-Pjs/Aide/actions/workflows/ci.yml)
+
 [**Live demo →** aide-ng.vercel.app](https://aide-ng.vercel.app) · Open in Chrome and just talk.
 
 ---
@@ -268,6 +270,26 @@ npm run balance    # wallet balance check
 
 `npm run proof` prints `SUCCESS` or the documented `PENDING_AUTHORIZATION` sandbox state
 
+### Continuous integration
+
+Every push and pull request runs five checks in parallel
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). They run against placeholder
+credentials, never a real provider — what they prove is the wiring, not the keys.
+
+| Check | What it protects |
+|---|---|
+| **Types** | `tsc --noEmit` across app, Convex functions, and tests. |
+| **Tests** | 267 tests over two vitest projects — plain Node for money, agent, and speech; an edge-runtime VM for the Convex functions, which is the only environment `convex-test` can drive. |
+| **Production build** | A full `next build`, so a route that only breaks when compiled cannot reach a deploy. |
+| **Speech worker** | Installs `edge-tts` and imports both speech entry points. A break here would otherwise reach a blind user as the robotic fallback voice, with nothing on screen to explain it. |
+| **No secrets committed** | Fails on a tracked `.env`, on local Convex state (it holds an admin key), or on anything shaped like a live credential. |
+
+Run the same gates locally:
+
+```bash
+npm run typecheck && npm test && npm run build
+```
+
 ### Troubleshooting
 
 | Symptom | Fix |
@@ -357,6 +379,24 @@ contrast.
   labelled `region`s), `role="log"` transcript and message threads with `aria-live` so new
   speech and incoming messages are announced automatically, `role="alert"` on errors,
   properly associated `<label>`s on every control, and a skip-to-content link.
+
+### Controls with no target to find
+
+A mute button is only a control if you can find it. These three do the same job without
+one, and each announces itself aloud, because a state change a user cannot see or hear is
+a state change they have to guess at.
+
+| Gesture | What happens |
+|---|---|
+| **Tap anywhere, or press any key** | Cuts Aide off mid-sentence. Nothing to aim at — a blind user should not have to hunt for a stop button while being talked over. |
+| **Tap three times** | Closes the microphone and keeps it closed. Aide says so, and says how to come back, since that sentence is the last thing heard before it goes quiet. Three more taps reopen it. Two would be too easy to do by accident; three is not. |
+| **Say nothing for 90 seconds** | Aide closes the mic itself and says it is doing so, rather than streaming an empty room indefinitely. Any tap or key wakes it. |
+
+The held state is enforced at the single function that can open the microphone, not at each
+of its callers, so a tab regaining focus, a reply finishing, or a recognizer restarting
+cannot quietly undo it. The input-level meter releases its own capture stream at the same
+time — otherwise the browser's recording indicator stays lit and "I've stopped listening"
+is a lie.
 
 The throughline: **redundancy**. Text, shape, contrast, and voice each carry the meaning on
 their own, so no single sensory channel is load-bearing — which is what lets one interface

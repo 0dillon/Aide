@@ -27,3 +27,6 @@ tts-env/
 venv/
 .venv/
 .vercel
+
+# Throwaway build dirs used by side-by-side test servers (see AIDE_DIST_DIR)
+.next-*/

@@ -45,18 +45,27 @@ const MIC_SILENT_MIN_MS = 3000;
 // function (/api/speak) instead. Either way the browser voice is the fallback.
 const TTS_PATH = process.env.NEXT_PUBLIC_TTS_PATH || "/api/tts";
 
-// Last-resort filler for when the model produces nothing at all for a while.
-// Aide is instructed to open every reply with its own short sentence, so this
-// should rarely be heard — hearing it every turn would be a verbal tic, not
-// conversation. The phrases are a FIXED set so the long Cache-Control on
-// /api/speak applies and they play instantly; they rotate so a slow patch
-// doesn't repeat the same words back to back.
-const THINKING_FILLERS = ["One moment.", "Let me check.", "Just a second.", "Bear with me."];
+// Spoken cover for a wait. Two sets, because the right words depend entirely on
+// whether Aide has said anything yet this turn: "Still working on that" is
+// nonsense before a first word, and "One moment" is nonsense after one.
+//
+// Neither set may echo the openers the system prompt suggests to the model.
+// They used to: this list held "Let me check." while the prompt suggested
+// "Let me check that.", so a slow turn played both back to back.
+//
+// Both sets are FIXED so the long Cache-Control on /api/speak applies and they
+// start instantly, and they rotate so a long wait doesn't repeat itself.
+export const OPENING_FILLERS = ["One moment.", "Just a second.", "Bear with me."];
+export const CONTINUING_FILLERS = ["Still working on that.", "Almost there.", "Won't be long now."];
+export const THINKING_FILLERS = [...OPENING_FILLERS, ...CONTINUING_FILLERS];
+// A stalled turn gets a few reassurances, not a running commentary.
+const MAX_FILLERS_PER_TURN = 3;
 // Measured against production: DeepSeek's first sentence reaches the speaker at
-// roughly 3.5s. Anything below that fires on EVERY turn, which is how a helpful
-// bridge turns into a verbal tic. This sits past it, so it only speaks when a
-// reply is genuinely stuck.
-const FILLER_AFTER_MS = 4200;
+// roughly 3.5s. The old 4200 sat only just past that, so an ordinary slow turn
+// tripped it and the user heard the filler collide with Aide's own opening
+// line. Aide now covers the pause itself, which makes this a genuine
+// last resort for a reply that has actually stalled — so it waits much longer.
+const FILLER_AFTER_MS = 7000;
 // The budget above is silence measured from the USER's point of view, which
 // starts when they stop talking — not when the request goes out. The quiet
 // period that decides they finished is part of that silence, so it is
@@ -137,6 +146,10 @@ export class VoiceEngine {
   // beginReply().
   private replyAbandoned = false;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
+  // Whether a real sentence has been spoken this turn — decides whether a
+  // cover should sound like a beginning or a continuation.
+  private spokeThisTurn = false;
+  private fillersUsed = 0;
   private fillerIndex = -1;
   // Sleep/wake: the mic closes after a stretch of silence and a gesture
   // reopens it, so Aide isn't streaming an empty room indefinitely.
@@ -201,12 +214,10 @@ export class VoiceEngine {
       this.armIdleTimer();
     }
 
-    // Warm the fillers into the browser cache (and the serverless function)
-    // while the greeting plays, so the first time one is genuinely needed it
-    // starts instantly instead of paying full synthesis latency.
-    for (const phrase of THINKING_FILLERS) {
-      void fetch(`${TTS_PATH}?text=${encodeURIComponent(phrase)}`).catch(() => {});
-    }
+    // No warm-up request. /api/tts is one Python process synthesizing serially,
+    // so anything fired at startup queues in front of the greeting — the one
+    // utterance the user is actually waiting on. The handshake a warm-up would
+    // pay for is per-process, and the greeting pays it anyway.
   }
 
   // Speak-only mode for browsers with no SpeechRecognition (Firefox, most iOS):
@@ -243,6 +254,17 @@ export class VoiceEngine {
   }
 
   // Public speak: interrupts whatever is queued and says this instead.
+  //
+  // Sent as ONE request, deliberately. Splitting a known block of text into
+  // sentences looks like it should start sooner, and it was tried: it made
+  // things far worse. Synthesis cost is dominated by a fixed per-request round
+  // trip to the speech service — roughly five seconds here — not by length, so
+  // a four-sentence greeting split four ways paid that cost four times. The
+  // whole greeting as one request took six seconds; split, it took forty.
+  //
+  // Streamed model replies are different and DO go sentence by sentence, but
+  // only because their sentences genuinely arrive over time. There is nothing
+  // to overlap when the full text is already in hand.
   speak(text: string): void {
     this.discardQueue(); // primed sentences from the old reply must not play
     this.speakNow(text);
@@ -253,28 +275,47 @@ export class VoiceEngine {
   beginReply(): void {
     this.replyPending = true;
     this.replyAbandoned = false;
+    this.spokeThisTurn = false;
+    this.fillersUsed = 0;
+    this.armFiller();
+  }
 
-    // A blind user gets no spinner. Several seconds of silence after speaking
-    // is indistinguishable from the app being broken, so if the model hasn't
-    // produced anything audible shortly, say something. Only fires when the
-    // wait is real — a fast reply cancels it before it is ever heard.
-    //
-    // The countdown starts from when the USER stopped talking, not from this
-    // call: deciding they had finished already cost them a beat of silence,
-    // and that beat is part of the same wait they are sitting through. Typed
-    // messages (nothing heard recently) just get the full budget.
-    const sinceHeard = Date.now() - this.lastHeardAt;
-    const alreadyWaited = this.lastHeardAt && sinceHeard < 3000 ? sinceHeard : 0;
-    const fillerDelay = Math.max(FILLER_MIN_WAIT_MS, FILLER_AFTER_MS - alreadyWaited);
-
+  // Arm the spoken cover for a wait.
+  //
+  // A blind user gets no spinner, so silence is indistinguishable from a dead
+  // app. This used to be armed once, at the start of a turn, and cleared by the
+  // first sentence that arrived — which meant it only ever covered the wait
+  // BEFORE Aide's first word, never the far longer waits after it. A recorded
+  // session showed the cost: 47% of it was silence, including a 27-second gap
+  // straight after Aide had spoken, with nothing filling it because the timer
+  // had already been cleared. So it is re-armed on every mid-reply lull too.
+  private armFiller(): void {
+    if (!this.replyPending || this.replyAbandoned) return;
+    if (this.fillersUsed >= MAX_FILLERS_PER_TURN) return; // reassurance, not commentary
     if (this.ackTimer) clearTimeout(this.ackTimer);
+
+    // For the FIRST cover the countdown starts from when the user stopped
+    // talking, not from this call: deciding they had finished already cost
+    // them a beat, and that beat is part of the same wait. Mid-reply there is
+    // no such debt — the clock starts now. Typed messages (nothing heard
+    // recently) just get the full budget.
+    const sinceHeard = Date.now() - this.lastHeardAt;
+    const owed = this.lastHeardAt && sinceHeard < 3000 ? sinceHeard : 0;
+    const delay = Math.max(FILLER_MIN_WAIT_MS, FILLER_AFTER_MS - (this.spokeThisTurn ? 0 : owed));
+
     this.ackTimer = setTimeout(() => {
       this.ackTimer = null;
       if (this.replyAbandoned || !this.replyPending) return;
-      if (this.currentAudio || this.currentUtter || this.queue.length > 0) return;
-      this.fillerIndex = (this.fillerIndex + 1) % THINKING_FILLERS.length;
-      this.speakNow(THINKING_FILLERS[this.fillerIndex]);
-    }, fillerDelay);
+      // Something is audible or about to be — no cover needed.
+      if (this.currentAudio || this.currentUtter || this.activeSpeech !== 0 || this.queue.length > 0) return;
+      // Before a first word it has to sound like a beginning; after one it has
+      // to sound like a continuation.
+      const set = this.spokeThisTurn ? CONTINUING_FILLERS : OPENING_FILLERS;
+      this.fillerIndex = (this.fillerIndex + 1) % set.length;
+      this.fillersUsed += 1;
+      this.spokeThisTurn = true; // anything further is now a continuation
+      this.speakNow(set[this.fillerIndex]);
+    }, delay);
   }
 
   endReply(): void {
@@ -304,6 +345,7 @@ export class VoiceEngine {
       clearTimeout(this.ackTimer);
       this.ackTimer = null;
     }
+    this.spokeThisTurn = true; // any later cover must sound like a continuation
     // The speaker is taken — either audible, or downloading the sentence
     // ahead of this one. Queue behind it and get synthesis started early.
     if (this.activeSpeech !== 0) {
@@ -691,8 +733,13 @@ export class VoiceEngine {
       return;
     }
     // Mid-reply lull: hold the turn open rather than ending it. queueSpeak()
-    // resumes playback the moment the next sentence arrives.
-    if (this.replyPending) return;
+    // resumes playback the moment the next sentence arrives — but a tool can
+    // take twenty seconds, and nothing else covers that, so arm a spoken cover
+    // for the wait rather than leaving the user in silence.
+    if (this.replyPending) {
+      this.armFiller();
+      return;
+    }
     this.speaking = false;
     this.handlers.onState({ speaking: false });
     this.speechEndedAt = Date.now();

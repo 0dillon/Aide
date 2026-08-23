@@ -450,10 +450,19 @@ export class VoiceEngine {
   }
 
   // Tap Aide while it talks — or say "aide stop talking" — to cut it off.
+  //
+  // The grace window belongs HERE and not in cutSpeechShort(), because it is
+  // about user intent: the click that trails the third tap lands on the orb and
+  // would cut off the notice that same tap just started. Callers that need the
+  // speech to stop for correctness rather than because someone asked — the
+  // visibility handler, which is the only thing stopping two open tabs talking
+  // over each other — go straight to cutSpeechShort() and are never suppressed.
   interrupt(): void {
-    // The click that trails the third tap lands here whenever the run ended on
-    // the Aide orb, and would cut off the notice that same tap just started.
     if (Date.now() < this.suppressInterruptUntil) return;
+    this.cutSpeechShort();
+  }
+
+  private cutSpeechShort(): void {
     this.discardQueue();
     this.activeSpeech = 0; // supersedes any synthesis still in flight
     // Whatever is still streaming from the model must not be spoken.
@@ -489,7 +498,9 @@ export class VoiceEngine {
       if (this.restartTimer) clearTimeout(this.restartTimer);
       this.detachRecognizer();
       this.setListening(false);
-      this.interrupt();
+      // Not suppressible: a hidden tab that keeps talking is heard over
+      // whichever tab the user actually switched to.
+      this.cutSpeechShort();
     } else {
       this.active = true;
       this.handlers.onState({ active: true });

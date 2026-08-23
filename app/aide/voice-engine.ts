@@ -234,6 +234,11 @@ export class VoiceEngine {
   // hold and offering to close one would be a straight lie.
   private canHear = false;
   private currentAudio: HTMLAudioElement | null = null;
+  // Tears down whatever currentAudio is playing, object URL included. Held on
+  // the instance so the paths that cut a clip off — an interrupt, a sentence
+  // pre-empting the one before it — can let go of the blob the same way a clip
+  // that simply ended does, instead of unwiring the element and leaking it.
+  private releaseCurrentAudio: (() => void) | null = null;
   private currentUtter: SpeechSynthesisUtterance | null = null;
   // Speech Chrome blocked before the first user interaction, replayed on the
   // first touch or keypress — no visible gate, nothing the user has to find.
@@ -883,12 +888,12 @@ export class VoiceEngine {
   // --- Speech synthesis ---
 
   private stopAllSpeech(): void {
-    if (this.currentAudio) {
-      this.currentAudio.onended = null;
-      this.currentAudio.onerror = null;
-      this.currentAudio.pause();
-      this.currentAudio = null;
-    }
+    // Through release(), so the clip's object URL is revoked as well as
+    // unwired. Nulling the handlers by hand here — which is what this did —
+    // was precisely what stopped release() from ever running, leaving a
+    // decoded MP3 pinned for the life of the page on every single interrupt.
+    this.releaseCurrentAudio?.();
+    this.currentAudio = null;
     this.currentUtter = null;
     window.speechSynthesis?.cancel();
   }
@@ -987,13 +992,9 @@ export class VoiceEngine {
     if (this.recentSpeech.length > 3) this.recentSpeech.shift();
     this.handlers.onState({ speaking: true });
 
-    // Stop any running neural audio
-    if (this.currentAudio) {
-      this.currentAudio.onended = null;
-      this.currentAudio.onerror = null;
-      this.currentAudio.pause();
-      this.currentAudio = null;
-    }
+    // Stop any running neural audio, and hand its blob back with it.
+    this.releaseCurrentAudio?.();
+    this.currentAudio = null;
 
     // Neural TTS, fully buffered then played. If this sentence was already
     // primed while the previous one spoke, its audio is here (or nearly here)
@@ -1035,7 +1036,12 @@ export class VoiceEngine {
         audio.pause();
         URL.revokeObjectURL(src);
         if (this.currentAudio === audio) this.currentAudio = null;
+        if (this.releaseCurrentAudio === release) this.releaseCurrentAudio = null;
       };
+      // Safe to call twice: the second call revokes an already-revoked URL,
+      // which is a no-op, and the identity checks above stop it clearing a
+      // clip that has since taken over.
+      this.releaseCurrentAudio = release;
 
       audio.onended = () => {
         release();

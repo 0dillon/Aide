@@ -22,11 +22,24 @@ function MicMeter({ closed }: { closed: boolean }) {
       return;
     }
     let raf = 0;
+    // getUserMedia can still be sitting on the permission prompt when this
+    // effect is torn down — and closing the mic is now three taps away at any
+    // instant, not ninety seconds of silence. The cleanup below cannot release
+    // a stream it has not been handed yet, so the resolution has to check
+    // whether anyone still wants it. Without this the meter kept a live capture
+    // stream, an AudioContext and a 60fps loop that nothing could reach, and
+    // the browser's recording dot stayed lit while Aide said it had stopped
+    // listening — the exact lie this component exists to rule out.
+    let cancelled = false;
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
     navigator.mediaDevices
       ?.getUserMedia({ audio: true })
       .then((s) => {
+        if (cancelled) {
+          s.getTracks().forEach((t) => t.stop());
+          return;
+        }
         stream = s;
         audioCtx = new AudioContext();
         const src = audioCtx.createMediaStreamSource(s);
@@ -43,8 +56,14 @@ function MicMeter({ closed }: { closed: boolean }) {
         };
         tick();
       })
-      .catch(() => setFailed(true));
+      // A rejection after teardown is the browser declining a stream nobody is
+      // waiting for any more; reporting it would put a mic error on screen for
+      // a user who had just asked for the mic to be closed.
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
     return () => {
+      cancelled = true;
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach((t) => t.stop());
       audioCtx?.close();

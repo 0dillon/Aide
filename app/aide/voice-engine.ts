@@ -382,6 +382,11 @@ export class VoiceEngine {
   // had already been cleared. So it is re-armed on every mid-reply lull too.
   private armFiller(): void {
     if (!this.replyPending || this.replyAbandoned) return;
+    // A cover reassures someone who is waiting on Aide. Someone who has just
+    // closed the microphone is not waiting on Aide, and "Still working on that"
+    // seven seconds after "I'll stop listening now" reads as Aide ignoring the
+    // one instruction it was given.
+    if (this.muted) return;
     if (this.fillersUsed >= MAX_FILLERS_PER_TURN) return; // reassurance, not commentary
     if (this.ackTimer) clearTimeout(this.ackTimer);
 
@@ -568,6 +573,11 @@ export class VoiceEngine {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
     this.dormant = false;
+    // Same for a cover already counting down from before the taps landed. The
+    // muted guard in armFiller() stops new ones being armed; this one is
+    // already on the clock and would fire straight over the notice.
+    if (this.ackTimer) clearTimeout(this.ackTimer);
+    this.ackTimer = null;
     // Drop any half-heard phrase with the mic. It was said to an Aide that is
     // now being told to stop listening, and dispatching it after the fact
     // would answer a question the user has already walked away from.

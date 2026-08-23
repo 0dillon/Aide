@@ -114,6 +114,12 @@ const TOGGLE_CLICK_GRACE_MS = 400;
 // is nothing on screen to remind them.
 export const MUTE_NOTICE = "That's three taps. I'll stop listening now. Tap three times again whenever you want me back.";
 export const UNMUTE_NOTICE = "I'm listening again. What can I help you with?";
+// Waking used to be silent, which is the whole reason a wake could turn into a
+// hold: a user who cannot see "waking up…" has no way to know the tap landed,
+// so they tap again, and a third tap used to complete a mute run. Answering the
+// first tap out loud is what stops the tapping. Kept to two words, because this
+// fires on an ordinary tap and a sentence here would wear thin fast.
+export const WAKE_NOTICE = "I'm listening.";
 
 // The tap-run bookkeeping, kept free of the DOM so it can be tested directly.
 export class TapRun {
@@ -274,7 +280,18 @@ export class VoiceEngine {
   start(): void {
     this.active = true;
     this.canHear = true;
-    this.handlers.onState({ active: true });
+    // Republish what the engine actually is, not just that it is running. This
+    // engine outlives the React tree that renders it — one instance is shared
+    // across remounts — while the provider's state is rebuilt from defaults
+    // every time it mounts. Sending only `active` left a held microphone
+    // reporting itself as listening, which is the one thing a user who cannot
+    // see the screen has no way to catch.
+    this.handlers.onState({
+      active: true,
+      muted: this.muted,
+      dormant: this.dormant,
+      micStatus: this.muted ? "not listening — tap three times to resume" : "starting…",
+    });
     document.addEventListener("visibilitychange", this.onVisibility);
     window.addEventListener("pointerdown", this.unlock);
     window.addEventListener("keydown", this.unlock);
@@ -492,7 +509,12 @@ export class VoiceEngine {
     // and must not ALSO be read as "wake up" or "shut up".
     //
     // Pointers only. A triple keypress is just typing.
-    if (this.canHear && e.type === "pointerdown" && this.countsAsTap(e) && this.taps.register(Date.now())) {
+    //
+    // A tap that arrives while Aide is asleep means "wake up" and nothing else,
+    // so it must not count toward a run. Otherwise the three taps someone makes
+    // to rouse a dormant Aide complete a hold instead, and they hear that Aide
+    // has stopped listening at the exact moment they were asking it to start.
+    if (this.canHear && e.type === "pointerdown" && !this.dormant && this.countsAsTap(e) && this.taps.register(Date.now())) {
       this.toggleMuted();
       return;
     }
@@ -600,7 +622,15 @@ export class VoiceEngine {
   private wake(): void {
     if (!this.dormant || this.muted) return;
     this.dormant = false;
+    // The tap that woke Aide is spent. Anything already counted belongs to a
+    // run the user began while Aide was asleep, and carrying it forward would
+    // let two more taps close the mic they just reopened.
+    this.taps.reset();
     this.handlers.onState({ dormant: false, micStatus: "waking up…" });
+    // Say so. speakNow() closes the mic while it talks and finishOrNext()
+    // reopens it after, so this does not race the recognizer being started
+    // below — but it does mean the user gets an answer to their tap.
+    this.speakNow(WAKE_NOTICE);
     if (this.active) this.startRecognition();
     this.armIdleTimer();
   }

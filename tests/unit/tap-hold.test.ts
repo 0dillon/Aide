@@ -5,6 +5,7 @@ import {
   TRIPLE_TAP_GAP_MS,
   TapRun,
   UNMUTE_NOTICE,
+  WAKE_NOTICE,
 } from "../../app/aide/voice-engine";
 import { SYSTEM_PROMPT } from "../../lib/agent/system";
 
@@ -72,6 +73,47 @@ describe("counting a run of taps", () => {
     expect(run.register(200)).toBe(false);
     expect(run.register(300)).toBe(false);
     expect(run.register(400)).toBe(true);
+  });
+});
+
+describe("waking up must not be mistaken for a hold", () => {
+  // Aide sleeps after a quiet spell and any tap wakes it. Waking used to say
+  // nothing, so a user who cannot see "waking up…" had no reason to believe
+  // the tap had landed — and tapping again, twice, closed the microphone they
+  // were trying to reopen. Two things prevent that now: taps that arrive while
+  // Aide is asleep do not count toward a run, and waking answers out loud.
+
+  it("answers the tap, so there is a reason to stop tapping", () => {
+    expect(WAKE_NOTICE.trim()).not.toBe("");
+  });
+
+  it("says it is listening, which is the thing the user just asked for", () => {
+    expect(WAKE_NOTICE).toMatch(/listening/i);
+  });
+
+  it("stays short enough to sit in front of an ordinary tap", () => {
+    // This fires on a plain tap, not a state change the user asked for. A
+    // sentence here would wear thin within one session.
+    expect(WAKE_NOTICE.split(/\s+/).length).toBeLessThanOrEqual(4);
+  });
+
+  it("never asks the user to look at anything", () => {
+    expect(WAKE_NOTICE).not.toMatch(/\b(see|look|watch|screen|display|shown?)\b/i);
+  });
+
+  it("cannot be confused with the notice for closing the mic", () => {
+    expect(WAKE_NOTICE).not.toBe(MUTE_NOTICE);
+    expect(WAKE_NOTICE).not.toBe(UNMUTE_NOTICE);
+  });
+
+  it("leaves no part-run behind for two more taps to finish", () => {
+    // What wake() now does: the tap that woke Aide is spent, so the two taps
+    // that follow it cannot complete a hold on their own.
+    const run = new TapRun();
+    run.register(0); // the tap that woke Aide
+    run.reset(); // …consumed by the wake
+    expect(run.register(100)).toBe(false);
+    expect(run.register(200)).toBe(false);
   });
 });
 

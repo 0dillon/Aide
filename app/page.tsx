@@ -103,6 +103,10 @@ export default function AidePage() {
 
         <button
           onClick={interrupt}
+          // Opts this button back into the triple-tap run — see countsAsTap()
+          // in app/aide/voice-engine.ts, which excludes buttons by default so
+          // that clicking an ordinary control three times cannot close the mic.
+          data-aide-orb=""
           aria-label={
             muted
               ? "Aide is not listening. Tap three times anywhere to start it listening again."

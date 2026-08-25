@@ -321,6 +321,41 @@ export function makeTools(account: Account) {
         await Promise.all((await store.getApplications(account.id)).map(async (a) => ({ ...a, job: (await store.getJob(a.jobId))?.title }))),
     }),
 
+    withdraw_application: tool({
+      description:
+        "Withdraw the worker's application to a job they applied for but have not started the assessment on. Confirm aloud first. If the assessment has already begun this is refused — say so plainly rather than implying it worked.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        const job = await store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        const r = await store.unapply(account.id, jobId);
+        return { ok: r.ok, gig: job.title, message: r.message };
+      },
+    }),
+
+    delete_gig: tool({
+      description:
+        "For employers: take down a gig they posted. IRREVERSIBLE, and it also withdraws any pending applications on it, so warn them of both and get an explicit spoken yes first. Refused once a worker has been hired or paid for the gig.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        if (account.role !== "employer") return { ok: false, message: "Only employer accounts can remove gigs." };
+        const job = await store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        const r = await store.deletePostedJob(account.id, jobId);
+        return { ok: r.ok, gig: job.title, message: r.message };
+      },
+    }),
+
+    delete_message: tool({
+      description:
+        "Delete a message the user themselves sent in a gig's onboarding thread. Read the message back and get a spoken yes first. Only their own messages can be deleted — pass the messageId from read_messages.",
+      parameters: z.object({ messageId: z.string() }),
+      execute: async ({ messageId }) => {
+        const r = await store.deleteMessage(account.id, messageId);
+        return { ok: r.ok, message: r.message };
+      },
+    }),
+
     start_assessment: tool({
       description: "Start the assessment for a job. Returns the assessment type ('oral' or 'mcq'), oral prompt or MCQ questions, the time limit in seconds (if any), and start timestamp. You should announce the assessment details, including the time limit, to the user.",
       parameters: z.object({ jobId: z.string() }),
@@ -512,7 +547,7 @@ export function makeTools(account: Account) {
         if (!(await store.messagingUnlocked(jobId))) {
           return { ok: false, message: "Messaging opens once the worker is hired for this gig." };
         }
-        const messages = (await store.listMessages(jobId)).map((m) => ({ from: m.from, author: m.authorName, text: m.text }));
+        const messages = (await store.listMessages(jobId)).map((m) => ({ messageId: m.id, from: m.from, author: m.authorName, text: m.text }));
         return { ok: true, jobId, gig: job.title, messages };
       },
     }),

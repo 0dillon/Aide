@@ -90,6 +90,20 @@ export function MessageThread({ jobId, role, id }: { jobId: string; role: "worke
     }
   };
 
+  // Only your own messages, and the server checks that against the stored
+  // author rather than trusting this component.
+  const remove = async (messageId: string, preview: string) => {
+    if (!window.confirm(`Delete your message "${preview}"? This cannot be undone.`)) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/messages?messageId=${encodeURIComponent(messageId)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Could not delete the message.");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   return (
     <section id={id} aria-label={`Onboarding messages with ${otherParty}`} className="rounded-b-lg border-t-2 border-[var(--line)] bg-[var(--paper)] p-4">
       <h4 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Onboarding messages</h4>
@@ -119,6 +133,15 @@ export function MessageThread({ jobId, role, id }: { jobId: string; role: "worke
                   {mine ? "You" : m.authorName} · <span className="font-normal">{time(m.at)}</span>
                 </p>
                 <p className="mt-1 whitespace-pre-wrap break-words text-lg leading-relaxed">{m.text}</p>
+                {mine && (
+                  <button
+                    onClick={() => remove(m._id, m.text.length > 40 ? `${m.text.slice(0, 40)}…` : m.text)}
+                    aria-label={`Delete your message: ${m.text}`}
+                    className="mt-2 cursor-pointer text-sm font-bold text-[var(--ink-soft)] underline"
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
           );

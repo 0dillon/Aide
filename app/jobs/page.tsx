@@ -100,6 +100,28 @@ function JobsPageInner() {
 
   const appFor = (jobId: string) => apps.find((a) => a.jobId === jobId);
 
+  // Withdraw an application. The server refuses once the assessment has begun;
+  // the button is hidden in that case too, but the server is what decides.
+  const withdrawFrom = async (job: Job) => {
+    setBusyJob(job.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/jobs/apply?jobId=${encodeURIComponent(job.id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Could not withdraw.");
+      await load();
+      speak(`Your application to ${job.title} has been withdrawn.`);
+    } catch (e) {
+      const msg = (e as Error).message;
+      setError(msg);
+      // Spoken as well as shown: a refusal the user cannot see is a button
+      // that silently did nothing.
+      speak(msg);
+    } finally {
+      setBusyJob(null);
+    }
+  };
+
   const applyTo = async (job: Job) => {
     setBusyJob(job.id);
     setError(null);
@@ -414,6 +436,16 @@ function JobsPageInner() {
                     >
                       {app.verified ? "✓ Skill verified" : app.status === "cancelled" ? "Locked — assessment cancelled" : `Applied — ${app.status}`}
                     </span>
+                  )}
+                  {app && app.status === "applied" && !app.verified && (
+                    <button
+                      onClick={() => withdrawFrom(job)}
+                      disabled={busyJob === job.id}
+                      aria-label={`Withdraw your application to ${job.title}`}
+                      className="min-h-12 cursor-pointer rounded-lg border-2 border-[var(--line)] px-6 py-3 text-lg font-bold text-[var(--ink-soft)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyJob === job.id ? "Withdrawing…" : "Withdraw application"}
+                    </button>
                   )}
                   {app && !app.verified && app.status !== "cancelled" && job.requiresAssessment && (
                     <button

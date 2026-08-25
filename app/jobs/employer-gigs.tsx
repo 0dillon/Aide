@@ -27,6 +27,32 @@ export function EmployerGigs({
   const [openThread, setOpenThread] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Take a gig down. Confirmed first, because it also withdraws every pending
+  // application on it — and refused outright by the server once anyone has been
+  // hired, so a worker's agreed job cannot vanish from under them.
+  const removeGig = async (job: Job, pendingCount: number) => {
+    const warning =
+      pendingCount > 0
+        ? `Remove "${job.title}"? This also withdraws ${pendingCount} pending application${pendingCount === 1 ? "" : "s"}. This cannot be undone.`
+        : `Remove "${job.title}"? This cannot be undone.`;
+    if (!window.confirm(warning)) return;
+    setBusyJob(job.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/jobs/post?jobId=${encodeURIComponent(job.id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Could not remove the gig.");
+      await reload();
+      speak(data?.message || "Gig removed.");
+    } catch (e) {
+      const msg = (e as Error).message;
+      setError(msg);
+      speak(msg);
+    } finally {
+      setBusyJob(null);
+    }
+  };
+
   const changeStatus = async (jobId: string, action: "hire" | "reject" | "pay") => {
     setBusyJob(jobId);
     setError(null);
@@ -110,6 +136,17 @@ export function EmployerGigs({
                   )}
                 </p>
                 <p className="mt-3 text-lg">{job.task}</p>
+
+                {!jobApps.some((a: any) => a.status === "hired" || a.status === "paid") && (
+                  <button
+                    onClick={() => removeGig(job, jobApps.filter((a: any) => a.status === "applied" || a.status === "assessed").length)}
+                    disabled={busyJob === job.id}
+                    aria-label={`Remove the gig ${job.title}`}
+                    className="mt-4 min-h-12 cursor-pointer rounded-lg border-2 border-[var(--line)] px-5 py-2 font-bold text-[var(--ink-soft)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busyJob === job.id ? "Removing…" : "Remove gig"}
+                  </button>
+                )}
 
                 <div className="mt-6 border-t-2 border-[var(--line)] pt-4">
                   <h3 className="text-lg font-bold">Applications ({jobApps.length})</h3>

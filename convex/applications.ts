@@ -20,6 +20,15 @@ export const listForAccount = query({
     await ctx.db.query("applications").withIndex("by_account", (q) => q.eq("accountId", accountId)).collect(),
 });
 
+// Everyone who applied to a gig. The employer side starts here: hiring,
+// rejecting and marking paid all act on a named applicant rather than on
+// whichever account the server happened to assume.
+export const listForJob = query({
+  args: { jobId: v.string() },
+  handler: async (ctx, { jobId }) =>
+    await ctx.db.query("applications").withIndex("by_job", (q) => q.eq("jobId", jobId)).collect(),
+});
+
 export const getForJob = query({
   args: { accountId: v.string(), jobId: v.string() },
   handler: async (ctx, { accountId, jobId }) =>
@@ -73,5 +82,32 @@ export const setStatus = mutation({
       if (Object.keys(patch).length > 0) await ctx.db.patch(app._id, patch);
     }
     return await ctx.db.get(app._id);
+  },
+});
+
+// Withdraw an application. Deliberately narrow: only the worker's own
+// application, only while it is still "applied", and only before any
+// assessment has been taken. Once an assessment is under way the attempt is a
+// record of what happened, and deleting it would be a way to quietly retry a
+// test that is meant to be taken once.
+export const remove = mutation({
+  args: { accountId: v.string(), jobId: v.string() },
+  handler: async (ctx, { accountId, jobId }) => {
+    const app = await ctx.db
+      .query("applications")
+      .withIndex("by_account_job", (q) => q.eq("accountId", accountId).eq("jobId", jobId))
+      .first();
+    if (!app) return { ok: false, reason: "missing" as const };
+    if (app.status !== "applied") return { ok: false, reason: "started" as const };
+    if (app.verified || app.assessmentResult !== undefined) return { ok: false, reason: "started" as const };
+    // An attempt row means the assessment clock has already started, even if
+    // no answer came back. That still counts as begun.
+    const attempt = await ctx.db
+      .query("attempts")
+      .withIndex("by_key", (q) => q.eq("key", `${accountId}-${jobId}`))
+      .first();
+    if (attempt) return { ok: false, reason: "started" as const };
+    await ctx.db.delete(app._id);
+    return { ok: true as const };
   },
 });

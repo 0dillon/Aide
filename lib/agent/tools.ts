@@ -129,7 +129,7 @@ export function makeTools(account: Account) {
           timeLimit: timeLimitMinutes !== undefined ? Math.round(timeLimitMinutes * 60) : undefined,
         });
         if (!v.ok) return { ok: false, message: v.message };
-        const job = await store.postJob({ ...v.gig, employer: account.name });
+        const job = await store.postJob({ ...v.gig, employer: account.name, employerAccountId: account.id });
         return {
           ok: true,
           jobId: job.id,
@@ -149,22 +149,29 @@ export function makeTools(account: Account) {
       parameters: z.object({}),
       execute: async () => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can review applicants." };
-        const jobs = (await store.listJobs()).filter((j) => j.employer.toLowerCase() === account.name.toLowerCase());
-        // Applicant details from the worker's Convex account (shared), not the
-        // per-instance in-memory copy.
-        const w = await store.getAccount(store.getWorker().id);
+        const jobs = (await store.listJobs()).filter((j) => store.ownsJob(account, j));
+        // Each applicant's details come from their OWN Convex account. This
+        // used to read one hardcoded worker, so every applicant an employer
+        // reviewed carried that worker's name, skills and bio.
         const applications = await Promise.all(
-          (await store.getApplications())
-            .filter((a) => jobs.some((j) => j.id === a.jobId))
+          (await store.listApplicantsForJobs(jobs.map((j) => j.id)))
             .map(async (a) => ({
-              jobId: a.jobId,
-              gig: (await store.getJob(a.jobId))?.title,
-              worker: w.name,
-              status: a.status,
-              skillVerified: a.verified,
-              assessmentResult: a.assessmentResult,
-              workerSkills: w.skills ?? [],
-              workerBio: w.bio ?? "",
+              ...(await (async () => {
+                const applicant = await store.getAccount(a.accountId);
+                return {
+                  jobId: a.jobId,
+                  // The employer needs this to name a specific applicant when
+                  // there is more than one on a gig.
+                  workerAccountId: a.accountId,
+                  gig: (await store.getJob(a.jobId))?.title,
+                  worker: applicant.name,
+                  status: a.status,
+                  skillVerified: a.verified,
+                  assessmentResult: a.assessmentResult,
+                  workerSkills: applicant.skills ?? [],
+                  workerBio: applicant.bio ?? "",
+                };
+              })()),
             })),
         );
         return { ok: true, applications };
@@ -174,15 +181,27 @@ export function makeTools(account: Account) {
     hire_worker: tool({
       description:
         "For employers: hire the worker on one of the employer's own gigs, normally after they passed the assessment. Confirm with the employer aloud before calling.",
-      parameters: z.object({ jobId: z.string() }),
-      execute: async ({ jobId }) => {
+      parameters: z.object({
+        jobId: z.string(),
+        workerAccountId: z
+          .string()
+          .optional()
+          .describe("which applicant to act on (workerAccountId from review_applicants); omit when the gig has only one"),
+      }),
+      execute: async ({ jobId, workerAccountId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can hire." };
         const job = await store.getJob(jobId);
-        if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
+        if (!job || !store.ownsJob(account, job)) {
           return { ok: false, message: "That gig is not one of this employer's postings." };
         }
-        const app = await store.hireWorker(jobId);
+        const chosen = await store.resolveApplicant(jobId, workerAccountId);
+        if (!chosen.ok) return { ok: false, message: chosen.message };
+        const app = await store.hireWorker(chosen.accountId, jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
+        store.publishEvent(chosen.accountId, {
+          type: "notify",
+          message: `Great news from ${job.employer}: you have been hired for ${job.title}. Say "help me with my job" and I will guide you through the task.`,
+        });
         return { ok: true, status: app.status, gig: job.title };
       },
     }),
@@ -190,16 +209,24 @@ export function makeTools(account: Account) {
     reject_worker: tool({
       description:
         "For employers: decline the applicant on one of their gigs. Confirm with the employer aloud before calling. The worker is notified kindly by Aide.",
-      parameters: z.object({ jobId: z.string() }),
-      execute: async ({ jobId }) => {
+      parameters: z.object({
+        jobId: z.string(),
+        workerAccountId: z
+          .string()
+          .optional()
+          .describe("which applicant to act on (workerAccountId from review_applicants); omit when the gig has only one"),
+      }),
+      execute: async ({ jobId, workerAccountId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can reject applicants." };
         const job = await store.getJob(jobId);
-        if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
+        if (!job || !store.ownsJob(account, job)) {
           return { ok: false, message: "That gig is not one of this employer's postings." };
         }
-        const app = await store.rejectWorker(jobId);
+        const chosen = await store.resolveApplicant(jobId, workerAccountId);
+        if (!chosen.ok) return { ok: false, message: chosen.message };
+        const app = await store.rejectWorker(chosen.accountId, jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
-        store.publishEvent(store.getWorker().id, {
+        store.publishEvent(chosen.accountId, {
           type: "notify",
           message: `An update on ${job.title} from ${job.employer}: they went with another applicant this time. Your assessment result stays on your profile — I can find you more jobs whenever you're ready.`,
         });
@@ -213,7 +240,7 @@ export function makeTools(account: Account) {
       parameters: z.object({}),
       execute: async () => {
         const { searchExternalJobs } = await import("../external");
-        const verified = (await store.getApplications()).filter((a) => a.verified);
+        const verified = (await store.getApplications(account.id)).filter((a) => a.verified);
         const verifiedSkills = (await Promise.all(verified.map(async (a) => (await store.getJob(a.jobId))?.skill))).filter(
           (s): s is string => !!s,
         );
@@ -242,16 +269,24 @@ export function makeTools(account: Account) {
     mark_gig_paid: tool({
       description:
         "For employers: mark one of their gigs as paid. This ONLY succeeds when a confirmed live API payment actually covers the gig's pay — if it fails, tell the employer to send the money from the payout desk first. Never claim a gig is paid unless this returns ok.",
-      parameters: z.object({ jobId: z.string() }),
-      execute: async ({ jobId }) => {
+      parameters: z.object({
+        jobId: z.string(),
+        workerAccountId: z
+          .string()
+          .optional()
+          .describe("which applicant to act on (workerAccountId from review_applicants); omit when the gig has only one"),
+      }),
+      execute: async ({ jobId, workerAccountId }) => {
         if (account.role !== "employer") return { ok: false, message: "Only employer accounts can mark gigs paid." };
         const job = await store.getJob(jobId);
-        if (!job || job.employer.toLowerCase() !== account.name.toLowerCase()) {
+        if (!job || !store.ownsJob(account, job)) {
           return { ok: false, message: "That gig is not one of this employer's postings." };
         }
-        const coverage = await store.verifyPaymentCoverage(jobId);
+        const chosen = await store.resolveApplicant(jobId, workerAccountId);
+        if (!chosen.ok) return { ok: false, message: chosen.message };
+        const coverage = await store.verifyPaymentCoverage(chosen.accountId, jobId);
         if (!coverage.ok) return { ok: false, message: coverage.message };
-        const app = await store.payWorker(jobId);
+        const app = await store.payWorker(chosen.accountId, jobId);
         if (!app) return { ok: false, message: "No application on that gig yet." };
         return { ok: true, status: app.status, gig: job.title, message: "Confirmed payment covers this gig; it is now marked paid." };
       },
@@ -271,7 +306,7 @@ export function makeTools(account: Account) {
       execute: async ({ jobId }) => {
         const job = await store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
-        const app = await store.apply(jobId);
+        const app = await store.apply(account.id, jobId);
         if (app.status === "cancelled") {
           return { ok: false, message: "The worker cancelled the assessment for this job earlier, so they can no longer apply to it." };
         }
@@ -283,7 +318,42 @@ export function makeTools(account: Account) {
       description: "List the worker's current job applications and their status.",
       parameters: z.object({}),
       execute: async () =>
-        await Promise.all((await store.getApplications()).map(async (a) => ({ ...a, job: (await store.getJob(a.jobId))?.title }))),
+        await Promise.all((await store.getApplications(account.id)).map(async (a) => ({ ...a, job: (await store.getJob(a.jobId))?.title }))),
+    }),
+
+    withdraw_application: tool({
+      description:
+        "Withdraw the worker's application to a job they applied for but have not started the assessment on. Confirm aloud first. If the assessment has already begun this is refused — say so plainly rather than implying it worked.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        const job = await store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        const r = await store.unapply(account.id, jobId);
+        return { ok: r.ok, gig: job.title, message: r.message };
+      },
+    }),
+
+    delete_gig: tool({
+      description:
+        "For employers: take down a gig they posted. IRREVERSIBLE, and it also withdraws any pending applications on it, so warn them of both and get an explicit spoken yes first. Refused once a worker has been hired or paid for the gig.",
+      parameters: z.object({ jobId: z.string() }),
+      execute: async ({ jobId }) => {
+        if (account.role !== "employer") return { ok: false, message: "Only employer accounts can remove gigs." };
+        const job = await store.getJob(jobId);
+        if (!job) return { ok: false, message: "No job with that id." };
+        const r = await store.deletePostedJob(account.id, jobId);
+        return { ok: r.ok, gig: job.title, message: r.message };
+      },
+    }),
+
+    delete_message: tool({
+      description:
+        "Delete a message the user themselves sent in a gig's onboarding thread. Read the message back and get a spoken yes first. Only their own messages can be deleted — pass the messageId from read_messages.",
+      parameters: z.object({ messageId: z.string() }),
+      execute: async ({ messageId }) => {
+        const r = await store.deleteMessage(account.id, messageId);
+        return { ok: r.ok, message: r.message };
+      },
     }),
 
     start_assessment: tool({
@@ -468,13 +538,16 @@ export function makeTools(account: Account) {
       execute: async ({ jobId }) => {
         const job = await store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
-        if (account.role === "employer" && job.employer.toLowerCase() !== account.name.toLowerCase()) {
-          return { ok: false, message: "That gig is not one of this employer's postings." };
+        // Being a worker is not the same as being THIS gig's worker. The old
+        // check let any worker read any thread, and these threads are where
+        // employers are told to send credentials.
+        if (!(await store.partyToThread(account, jobId))) {
+          return { ok: false, message: "That conversation is not yours." };
         }
         if (!(await store.messagingUnlocked(jobId))) {
           return { ok: false, message: "Messaging opens once the worker is hired for this gig." };
         }
-        const messages = (await store.listMessages(jobId)).map((m) => ({ from: m.from, author: m.authorName, text: m.text }));
+        const messages = (await store.listMessages(jobId)).map((m) => ({ messageId: m.id, from: m.from, author: m.authorName, text: m.text }));
         return { ok: true, jobId, gig: job.title, messages };
       },
     }),
@@ -489,15 +562,18 @@ export function makeTools(account: Account) {
       execute: async ({ jobId, text }) => {
         const job = await store.getJob(jobId);
         if (!job) return { ok: false, message: "No job with that id." };
-        if (account.role === "employer" && job.employer.toLowerCase() !== account.name.toLowerCase()) {
-          return { ok: false, message: "That gig is not one of this employer's postings." };
+        // Being a worker is not the same as being THIS gig's worker. The old
+        // check let any worker read any thread, and these threads are where
+        // employers are told to send credentials.
+        if (!(await store.partyToThread(account, jobId))) {
+          return { ok: false, message: "That conversation is not yours." };
         }
         if (!(await store.messagingUnlocked(jobId))) {
           return { ok: false, message: "Messaging opens once the worker is hired for this gig." };
         }
         if (!text.trim()) return { ok: false, message: "There is no message to send." };
         const from = account.role === "employer" ? ("employer" as const) : ("worker" as const);
-        await store.sendMessage(jobId, from, account.name, text);
+        await store.sendMessage(jobId, from, account.id, account.name, text);
         return { ok: true, jobId, gig: job.title, sent: text.trim() };
       },
     }),

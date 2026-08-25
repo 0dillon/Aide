@@ -70,33 +70,37 @@ beforeEach(async () => {
   );
 });
 
+// Coverage is now checked against a NAMED worker's wallet rather than a
+// hardcoded one, so every call has to say whose money it is talking about.
+const WORKER = "demo-worker";
+
 describe("verifyPaymentCoverage", () => {
   it("refuses when no money has arrived at all", async () => {
     inbound = 0;
-    const r = await verifyPaymentCoverage("g-a");
+    const r = await verifyPaymentCoverage(WORKER, "g-a");
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/no confirmed payment/i);
   });
 
   it("refuses when the money that arrived is not enough", async () => {
     inbound = 5000; // gig pays 12000
-    expect((await verifyPaymentCoverage("g-a")).ok).toBe(false);
+    expect((await verifyPaymentCoverage(WORKER, "g-a")).ok).toBe(false);
   });
 
   it("allows it once enough has genuinely landed", async () => {
     inbound = 12000;
-    expect((await verifyPaymentCoverage("g-a")).ok).toBe(true);
+    expect((await verifyPaymentCoverage(WORKER, "g-a")).ok).toBe(true);
   });
 
   it("allows it at the exact amount, not a naira more", async () => {
     inbound = 12000;
-    const r = await verifyPaymentCoverage("g-a");
+    const r = await verifyPaymentCoverage(WORKER, "g-a");
     expect(r.ok).toBe(true);
   });
 
   it("refuses one naira short", async () => {
     inbound = 11999;
-    expect((await verifyPaymentCoverage("g-a")).ok).toBe(false);
+    expect((await verifyPaymentCoverage(WORKER, "g-a")).ok).toBe(false);
   });
 
   it("will not let one payment be claimed by two different gigs", async () => {
@@ -105,7 +109,7 @@ describe("verifyPaymentCoverage", () => {
     // close out several gigs on a single transfer.
     inbound = 12000;
     paidApps = [{ _id: "a1", accountId: "demo-worker", jobId: "g-a", status: "paid", verified: true }];
-    const r = await verifyPaymentCoverage("g-b");
+    const r = await verifyPaymentCoverage(WORKER, "g-b");
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/already claimed/i);
   });
@@ -113,24 +117,24 @@ describe("verifyPaymentCoverage", () => {
   it("allows the second gig once enough arrived to cover both", async () => {
     inbound = 20000; // 12000 + 8000
     paidApps = [{ _id: "a1", accountId: "demo-worker", jobId: "g-a", status: "paid", verified: true }];
-    expect((await verifyPaymentCoverage("g-b")).ok).toBe(true);
+    expect((await verifyPaymentCoverage(WORKER, "g-b")).ok).toBe(true);
   });
 
   it("does not count gigs that are merely hired against the balance", async () => {
     // Only "paid" claims money. A hired-but-unpaid gig has taken nothing yet.
     inbound = 12000;
     paidApps = [{ _id: "a1", accountId: "demo-worker", jobId: "g-b", status: "hired", verified: true }];
-    expect((await verifyPaymentCoverage("g-a")).ok).toBe(true);
+    expect((await verifyPaymentCoverage(WORKER, "g-a")).ok).toBe(true);
   });
 
   it("says exactly how much more is needed, so the employer can act", async () => {
     inbound = 5000;
-    const r = await verifyPaymentCoverage("g-a");
+    const r = await verifyPaymentCoverage(WORKER, "g-a");
     expect(r.message).toContain("7000");
   });
 
   it("refuses a gig that does not exist rather than defaulting to allowed", async () => {
     inbound = 999999;
-    expect((await verifyPaymentCoverage("nope")).ok).toBe(false);
+    expect((await verifyPaymentCoverage(WORKER, "nope")).ok).toBe(false);
   });
 });

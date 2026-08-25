@@ -19,6 +19,7 @@ export const post = mutation({
     skill: v.string(),
     pay: v.number(),
     employer: v.string(),
+    employerAccountId: v.optional(v.string()),
     requiresAssessment: v.boolean(),
     assessmentType: v.optional(v.union(v.literal("oral"), v.literal("mcq"))),
     assessmentQuestion: v.optional(v.string()),
@@ -27,6 +28,33 @@ export const post = mutation({
   },
   handler: async (ctx, a) => {
     await ctx.db.insert("postedJobs", { ...a, at: Date.now() });
+  },
+});
+
+// Take a gig down. Only the account that posted it, and only while nobody is
+// committed to it: once an applicant has been hired or paid, the gig is a
+// record of work that was agreed, and removing it would strand their
+// application and their onboarding thread with no gig to point at.
+//
+// Gigs posted before employerAccountId existed have no owner recorded, so
+// nobody can delete them. Refusing is the safe direction.
+export const removePosted = mutation({
+  args: { jobId: v.string(), accountId: v.string() },
+  handler: async (ctx, { jobId, accountId }) => {
+    const job = await ctx.db.query("postedJobs").withIndex("by_jobId", (q) => q.eq("jobId", jobId)).first();
+    if (!job) return { ok: false, reason: "missing" as const };
+    if (!job.employerAccountId || job.employerAccountId !== accountId) {
+      return { ok: false, reason: "not-yours" as const };
+    }
+    const apps = await ctx.db.query("applications").withIndex("by_job", (q) => q.eq("jobId", jobId)).collect();
+    if (apps.some((a) => a.status === "hired" || a.status === "paid")) {
+      return { ok: false, reason: "committed" as const };
+    }
+    // Applications to a gig that no longer exists would show a worker a job
+    // they can never hear about again, so they go with it.
+    for (const a of apps) await ctx.db.delete(a._id);
+    await ctx.db.delete(job._id);
+    return { ok: true as const, removedApplications: apps.length };
   },
 });
 

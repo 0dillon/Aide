@@ -13,6 +13,7 @@ export const send = mutation({
     jobId: v.string(),
     workerAccountId: v.string(),
     from: v.union(v.literal("worker"), v.literal("employer")),
+    authorAccountId: v.optional(v.string()),
     authorName: v.string(),
     text: v.string(),
   },
@@ -31,4 +32,21 @@ export const listForJob = query({
       .withIndex("by_job", (q) => q.eq("jobId", jobId))
       .order("asc")
       .collect(),
+});
+
+// Delete a message you wrote. The author's account id is checked here rather
+// than trusted from the caller's claim about themselves, and messages written
+// before authorAccountId existed carry no author, so they cannot be deleted by
+// anyone — safer than guessing from a display name.
+export const remove = mutation({
+  args: { messageId: v.id("messages"), accountId: v.string() },
+  handler: async (ctx, { messageId, accountId }) => {
+    const msg = await ctx.db.get(messageId);
+    if (!msg) return { ok: false, reason: "missing" as const };
+    if (!msg.authorAccountId || msg.authorAccountId !== accountId) {
+      return { ok: false, reason: "not-yours" as const };
+    }
+    await ctx.db.delete(messageId);
+    return { ok: true as const, jobId: msg.jobId };
+  },
 });

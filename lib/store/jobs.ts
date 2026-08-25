@@ -17,6 +17,7 @@ function toJob(d: PostedJobDoc): Job {
     skill: d.skill,
     pay: d.pay,
     employer: d.employer,
+    employerAccountId: d.employerAccountId,
     requiresAssessment: d.requiresAssessment,
     assessmentType: d.assessmentType,
     assessmentQuestion: d.assessmentQuestion,
@@ -123,6 +124,7 @@ export async function postJob(input: {
   skill: string;
   pay: number;
   employer: string;
+  employerAccountId?: string;
   requiresAssessment: boolean;
   assessmentType?: "oral" | "mcq";
   assessmentQuestion?: string;
@@ -137,6 +139,7 @@ export async function postJob(input: {
     skill: input.skill.trim().toLowerCase(),
     pay: input.pay,
     employer: input.employer,
+    employerAccountId: input.employerAccountId,
     requiresAssessment: input.requiresAssessment,
     assessmentType: input.requiresAssessment ? input.assessmentType || "oral" : undefined,
     assessmentQuestion: input.assessmentQuestion?.trim() || undefined,
@@ -150,6 +153,7 @@ export async function postJob(input: {
     skill: job.skill,
     pay: job.pay,
     employer: job.employer,
+    employerAccountId: job.employerAccountId,
     requiresAssessment: job.requiresAssessment,
     assessmentType: job.assessmentType,
     assessmentQuestion: job.assessmentQuestion,
@@ -227,4 +231,35 @@ export async function trackExternalJob(accountId: string, externalJobId: string)
     | null;
   if (!d) return undefined;
   return { id: d._id, externalJobId: d.externalJobId, title: d.title, company: d.company, url: d.url, status: "tracked", at: d.at };
+}
+
+// Does this account own this gig? Ownership is by account id wherever one was
+// recorded. The seeded demo gigs and anything posted before employerAccountId
+// existed have no owner, so they fall back to the display-name match the app
+// has always used — that comparison is weak (two accounts can share a name),
+// which is exactly why new gigs no longer rely on it.
+export function ownsJob(acc: { id: string; name: string; role: string }, job: Job): boolean {
+  if (acc.role !== "employer") return false;
+  if (job.employerAccountId) return job.employerAccountId === acc.id;
+  return job.employer.toLowerCase() === acc.name.toLowerCase();
+}
+
+// Take down a gig you posted. The ownership and "nobody is committed to it"
+// checks live in the Convex mutation so two requests cannot race each other.
+export async function deletePostedJob(accountId: string, jobId: string): Promise<{ ok: boolean; message: string }> {
+  const r = (await convexClient().mutation(api.jobs.removePosted, { jobId, accountId })) as
+    | { ok: true; removedApplications: number }
+    | { ok: false; reason: "missing" | "not-yours" | "committed" };
+  if (r.ok) {
+    return {
+      ok: true,
+      message:
+        r.removedApplications > 0
+          ? `Gig removed, along with ${r.removedApplications} pending application${r.removedApplications === 1 ? "" : "s"}.`
+          : "Gig removed.",
+    };
+  }
+  if (r.reason === "missing") return { ok: false, message: "That gig no longer exists, or it is one of the built-in demo gigs, which cannot be removed." };
+  if (r.reason === "not-yours") return { ok: false, message: "That gig is not one of your postings." };
+  return { ok: false, message: "Someone has already been hired for this gig, so it cannot be removed." };
 }

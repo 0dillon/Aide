@@ -9,6 +9,10 @@ const store = vi.hoisted(() => ({
   hireWorker: vi.fn(), rejectWorker: vi.fn(), payWorker: vi.fn(),
   verifyPaymentCoverage: vi.fn(), publishEvent: vi.fn(),
   listMessages: vi.fn(), sendMessage: vi.fn(), messagingUnlocked: vi.fn(),
+  deleteMessage: vi.fn(),
+  // Ownership and party checks are real functions now rather than an inline
+  // name comparison, so the doubles have to answer them.
+  ownsJob: vi.fn(), resolveApplicant: vi.fn(), partyToThread: vi.fn(),
 }));
 const session = vi.hoisted(() => ({ userIdFrom: vi.fn(() => "whoever") }));
 
@@ -29,6 +33,22 @@ const post = (mod: any, body: unknown) =>
 beforeEach(() => {
   vi.clearAllMocks();
   store.getWorker.mockReturnValue({ id: "demo-worker", name: "Ada Okafor" });
+  // A gig is yours when your account id posted it, or (for the seeded demo
+  // gigs, which have no owner) when the display name matches.
+  store.ownsJob.mockImplementation((acc: any, job: any) =>
+    acc.role === "employer" && job.employer.toLowerCase() === acc.name.toLowerCase(),
+  );
+  store.resolveApplicant.mockResolvedValue({
+    ok: true,
+    accountId: "demo-worker",
+    application: { id: "a1", jobId: "g-own", status: "applied", verified: false },
+  });
+  store.partyToThread.mockImplementation(async (acc: any, jobId: string) => {
+    const job = jobId === "g-own" ? OWN_GIG : jobId === "g-other" ? OTHER_GIG : undefined;
+    if (!job) return null;
+    if (acc.role === "employer") return job.employer.toLowerCase() === acc.name.toLowerCase() ? "employer" : null;
+    return acc.id === "demo-worker" && jobId === "g-own" ? "worker" : null;
+  });
   store.getJob.mockImplementation(async (id: string) =>
     id === "g-own" ? OWN_GIG : id === "g-other" ? OTHER_GIG : undefined,
   );
@@ -157,6 +177,34 @@ describe("/api/messages", () => {
     store.getAccount.mockResolvedValue(WORKER);
     store.sendMessage.mockResolvedValue({ id: "m1" });
     await post(messages, { jobId: "g-own", text: "When do I start?" });
-    expect(store.sendMessage).toHaveBeenCalledWith("g-own", "worker", "Ada Okafor", "When do I start?");
+    // The author's ACCOUNT travels with the message now, not just their display
+    // name — it is what decides who may later delete it.
+    expect(store.sendMessage).toHaveBeenCalledWith("g-own", "worker", "demo-worker", "Ada Okafor", "When do I start?");
+  });
+});
+
+describe("DELETE /api/messages", () => {
+  it("requires a messageId", async () => {
+    store.getAccount.mockResolvedValue(WORKER);
+    const res = await messages.DELETE(new Request("http://localhost/x", { method: "DELETE" }));
+    expect(res.status).toBe(400);
+    expect(store.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("deletes as the signed-in account, never as the id the caller claims", async () => {
+    store.getAccount.mockResolvedValue(WORKER);
+    store.deleteMessage.mockResolvedValue({ ok: true, message: "Message deleted." });
+    const res = await messages.DELETE(
+      new Request("http://localhost/x?messageId=m1&accountId=u-someone-else", { method: "DELETE" }),
+    );
+    expect(res.status).toBe(200);
+    expect(store.deleteMessage).toHaveBeenCalledWith("demo-worker", "m1");
+  });
+
+  it("passes the refusal through when the message is not yours", async () => {
+    store.getAccount.mockResolvedValue(WORKER);
+    store.deleteMessage.mockResolvedValue({ ok: false, message: "You can only delete messages you sent yourself." });
+    const res = await messages.DELETE(new Request("http://localhost/x?messageId=m1", { method: "DELETE" }));
+    expect(res.status).toBe(403);
   });
 });

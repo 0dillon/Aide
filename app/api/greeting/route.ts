@@ -1,4 +1,4 @@
-import { getAccount, getApplications, getBalance, getJob, getWallet, listJobs } from "@/lib/store";
+import { getAccount, getApplications, getBalance, getJob, getWallet, listApplicantsForJobs, listJobs } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export async function GET(req: Request) {
 
   if (acc.role === "employer") {
     const posted = (await listJobs()).filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
-    const apps = (await getApplications()).filter((a) => posted.some((j) => j.id === a.jobId));
+    const apps = await listApplicantsForJobs(posted.map((j) => j.id));
     const readyToHire = apps.filter((a) => a.status === "assessed");
     const parts = [`${hello} ${acc.name}, I'm Aide. I'm listening — just talk to me.`];
     parts.push(
@@ -46,7 +46,7 @@ export async function GET(req: Request) {
     /* greet without the money line */
   }
 
-  const apps = await getApplications();
+  const apps = await getApplications(acc.id);
   const pendingChecks = await Promise.all(
     apps.map(async (a) => a.status === "applied" && !a.verified && !!(await getJob(a.jobId))?.requiresAssessment),
   );

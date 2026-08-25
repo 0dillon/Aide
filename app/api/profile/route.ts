@@ -1,4 +1,4 @@
-import { getAccount, getApplications, getBalance, getJob, listJobs, publicAccount, updateProfile } from "@/lib/store";
+import { getAccount, getApplications, getBalance, getJob, listApplicantsForJobs, listJobs, publicAccount, updateProfile } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -11,7 +11,7 @@ export async function GET(req: Request) {
 
   if (acc.role === "employer") {
     const posted = (await listJobs()).filter((j) => j.employer.toLowerCase() === acc.name.toLowerCase());
-    const apps = await getApplications();
+    const apps = await listApplicantsForJobs(posted.map((j) => j.id));
     const completed = posted.filter((j) => apps.some((a) => a.jobId === j.id && a.verified));
     return Response.json({
       account: publicAccount(acc),
@@ -32,7 +32,7 @@ export async function GET(req: Request) {
     wallet = b;
   } catch {}
   const applications = await Promise.all(
-    (await getApplications()).map(async (a) => ({ ...a, job: await getJob(a.jobId) })),
+    (await getApplications(acc.id)).map(async (a) => ({ ...a, job: await getJob(a.jobId) })),
   );
   const verified = applications.filter((a) => a.verified);
   return Response.json({

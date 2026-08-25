@@ -1,4 +1,4 @@
-import { getAccount, getJob, listMessages, messagingUnlocked, sendMessage } from "@/lib/store";
+import { deleteMessage, getAccount, getJob, listMessages, messagingUnlocked, partyToThread, sendMessage } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -10,13 +10,6 @@ const MAX_LEN = 2000;
 // the reactive live delivery is handled by Convex + the events feed, so this
 // route is just the gated read/write surface for the on-screen thread.
 
-// Is this account a party to the gig's conversation?
-function partyTo(job: { employer: string }, acc: { role: string; name: string }): "employer" | "worker" | null {
-  if (acc.role === "employer") return job.employer.toLowerCase() === acc.name.toLowerCase() ? "employer" : null;
-  if (acc.role === "worker") return "worker";
-  return null;
-}
-
 export async function GET(req: Request) {
   const acc = await getAccount(userIdFrom(req));
   const jobId = new URL(req.url).searchParams.get("jobId");
@@ -24,7 +17,7 @@ export async function GET(req: Request) {
 
   const job = await getJob(jobId);
   if (!job) return Response.json({ error: "No job with that id." }, { status: 404 });
-  if (!partyTo(job, acc)) return Response.json({ error: "That conversation is not yours." }, { status: 403 });
+  if (!(await partyToThread(acc, jobId))) return Response.json({ error: "That conversation is not yours." }, { status: 403 });
 
   const unlocked = await messagingUnlocked(jobId);
   return Response.json({
@@ -44,13 +37,23 @@ export async function POST(req: Request) {
   const job = await getJob(jobId);
   if (!job) return Response.json({ error: "No job with that id." }, { status: 404 });
 
-  const from = partyTo(job, acc);
+  const from = await partyToThread(acc, jobId);
   if (!from) return Response.json({ error: "That conversation is not yours." }, { status: 403 });
 
   if (!(await messagingUnlocked(jobId))) {
     return Response.json({ error: "Messaging opens once the worker is hired for this gig." }, { status: 409 });
   }
 
-  const message = await sendMessage(jobId, from, acc.name, text);
+  const message = await sendMessage(jobId, from, acc.id, acc.name, text);
   return Response.json({ ok: true, message });
+}
+
+// Delete one of your own messages. Ownership is enforced against the stored
+// author id, not against anything the caller says about themselves.
+export async function DELETE(req: Request) {
+  const acc = await getAccount(userIdFrom(req));
+  const messageId = new URL(req.url).searchParams.get("messageId");
+  if (!messageId) return Response.json({ error: "messageId is required." }, { status: 400 });
+  const r = await deleteMessage(acc.id, messageId);
+  return Response.json(r.ok ? { ok: true } : { error: r.message }, { status: r.ok ? 200 : 403 });
 }

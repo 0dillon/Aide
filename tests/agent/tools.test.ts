@@ -17,6 +17,11 @@ const store = vi.hoisted(() => ({
   addPreference: vi.fn(), removePreference: vi.fn(),
   listMessages: vi.fn(), sendMessage: vi.fn(), messagingUnlocked: vi.fn(),
   setExternalJobs: vi.fn(), trackExternalJob: vi.fn(), publishEvent: vi.fn(),
+  deleteMessage: vi.fn(), unapply: vi.fn(), deletePostedJob: vi.fn(),
+  // Ownership, applicant choice and thread membership are real lookups now,
+  // not inline name comparisons, so the doubles have to answer them.
+  ownsJob: vi.fn(), resolveApplicant: vi.fn(), partyToThread: vi.fn(),
+  listApplicantsForJob: vi.fn(), listApplicantsForJobs: vi.fn(),
 }));
 
 vi.mock("../../lib/store", () => store);
@@ -42,6 +47,22 @@ beforeEach(() => {
   store.listJobs.mockResolvedValue([OWN_GIG, OTHER_GIG]);
   store.getApplications.mockResolvedValue([]);
   store.messagingUnlocked.mockResolvedValue(true);
+  store.ownsJob.mockImplementation((acc: any, job: any) =>
+    acc.role === "employer" && job.employer.toLowerCase() === acc.name.toLowerCase(),
+  );
+  store.resolveApplicant.mockResolvedValue({
+    ok: true,
+    accountId: "demo-worker",
+    application: { id: "a1", jobId: "g-own", status: "applied", verified: false },
+  });
+  store.listApplicantsForJobs.mockResolvedValue([]);
+  // Only this gig's hired worker, and only the employer who posted it.
+  store.partyToThread.mockImplementation(async (acc: any, jobId: string) => {
+    const job = jobId === "g-own" ? OWN_GIG : jobId === "g-other" ? OTHER_GIG : undefined;
+    if (!job) return null;
+    if (acc.role === "employer") return job.employer.toLowerCase() === acc.name.toLowerCase() ? "employer" : null;
+    return acc.id === "demo-worker" && jobId === "g-own" ? "worker" : null;
+  });
 });
 
 describe("employer-only actions are refused to workers", () => {
@@ -100,7 +121,9 @@ describe("marking a gig paid requires money to have actually arrived", () => {
     store.payWorker.mockResolvedValue({ id: "a1", jobId: "g-own", status: "paid", verified: true });
     const r = await run(employer, "mark_gig_paid", { jobId: "g-own" });
     expect(r.ok).toBe(true);
-    expect(store.payWorker).toHaveBeenCalledWith("g-own");
+    // Paying names the worker being paid. It used to name nobody, and the
+    // store filled in a hardcoded account.
+    expect(store.payWorker).toHaveBeenCalledWith("demo-worker", "g-own");
   });
 
   it("checks coverage before writing, never after", async () => {
@@ -140,7 +163,8 @@ describe("the onboarding channel stays shut until someone is hired", () => {
     store.sendMessage.mockResolvedValue({});
     const r = await run(employer, "send_message", { jobId: "g-own", text: secret });
     expect(r.ok).toBe(true);
-    expect(store.sendMessage).toHaveBeenCalledWith("g-own", "employer", "ClearVoice Media", secret);
+    // The author's account travels with the message, not just their name.
+    expect(store.sendMessage).toHaveBeenCalledWith("g-own", "employer", "u-emp", "ClearVoice Media", secret);
   });
 
   it("refuses an empty message", async () => {

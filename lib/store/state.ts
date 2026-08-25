@@ -21,6 +21,10 @@ export type Job = {
   skill: string;
   pay: number;
   employer: string;
+  // The posting account. Absent on the seeded demo gigs and on anything posted
+  // before this existed, which is why every ownership check must treat a
+  // missing value as "not yours" rather than as a match.
+  employerAccountId?: string;
   requiresAssessment: boolean;
   assessmentType?: "oral" | "mcq";
   // Employer-written spoken-assessment question; when absent, a generic

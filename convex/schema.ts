@@ -107,6 +107,10 @@ export default defineSchema({
     skill: v.string(),
     pay: v.number(),
     employer: v.string(),
+    // Who posted it. `employer` is a display name and two accounts can share
+    // one, so it cannot decide who may edit or delete a gig. Optional because
+    // gigs written before this field existed must still validate.
+    employerAccountId: v.optional(v.string()),
     requiresAssessment: v.boolean(),
     assessmentType: v.optional(v.union(v.literal("oral"), v.literal("mcq"))),
     assessmentQuestion: v.optional(v.string()),
@@ -115,7 +119,9 @@ export default defineSchema({
     ),
     timeLimit: v.optional(v.number()),
     at: v.number(),
-  }).index("by_jobId", ["jobId"]),
+  })
+    .index("by_jobId", ["jobId"])
+    .index("by_employer", ["employerAccountId"]),
 
   // Assessment start timestamps, for time-limited assessments.
   attempts: defineTable({
@@ -131,7 +137,11 @@ export default defineSchema({
     assessmentResult: v.optional(v.string()),
   })
     .index("by_account", ["accountId"])
-    .index("by_account_job", ["accountId", "jobId"]),
+    .index("by_account_job", ["accountId", "jobId"])
+    // An employer starts from their gig, not from a worker: hiring, rejecting
+    // and marking paid all need "who applied to this job". Without it those
+    // paths had to guess, and guessed the demo worker every time.
+    .index("by_job", ["jobId"]),
 
   // The post-hire onboarding channel. Once an employer hires an applicant, this
   // is the only place they can pass job-specific directives, credentials, or
@@ -144,6 +154,9 @@ export default defineSchema({
     jobId: v.string(),
     workerAccountId: v.string(),
     from: v.union(v.literal("worker"), v.literal("employer")),
+    // Who actually wrote it. authorName is a display name and cannot authorise
+    // a delete. Optional so messages written before this field existed validate.
+    authorAccountId: v.optional(v.string()),
     authorName: v.string(),
     text: v.string(),
     at: v.number(),

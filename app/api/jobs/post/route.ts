@@ -27,6 +27,6 @@ export async function POST(req: Request) {
   const v = validateGig(body);
   if (!v.ok) return Response.json({ error: v.message }, { status: 400 });
 
-  const job = await postJob({ ...v.gig, employer: acc.name });
+  const job = await postJob({ ...v.gig, employer: acc.name, employerAccountId: acc.id });
   return Response.json({ ok: true, job });
 }

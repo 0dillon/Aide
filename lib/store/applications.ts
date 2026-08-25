@@ -6,8 +6,15 @@ import { getBalance, getWallet } from "./payments";
 
 // Applications live in Convex so the worker↔employer loop (apply → assessed →
 // hired/rejected/paid) is visible to both parties no matter which serverless
-// instance served either request. Applications belong to the demo worker, as
-// before — `worker.id` is the owning account.
+// instance served either request.
+//
+// Every function here takes the owning account explicitly. It used to read
+// `owner()`, a constant that returned the demo worker, so every signed-in user
+// shared one set of applications: your application list was somebody else's,
+// applying as you applied as them, and an employer hiring "the applicant"
+// hired the demo worker whoever had actually applied. The account is now a
+// parameter precisely so it cannot be forgotten — leaving it out is a type
+// error rather than a silent fallback to the wrong person.
 
 type AppDoc = { _id: string; accountId: string; jobId: string; status: Application["status"]; verified: boolean; assessmentResult?: string };
 
@@ -15,28 +22,78 @@ function toApplication(d: AppDoc): Application {
   return { id: d._id, jobId: d.jobId, status: d.status, verified: d.verified, assessmentResult: d.assessmentResult };
 }
 
-const owner = () => worker.id;
-
-export async function apply(jobId: string): Promise<Application> {
-  const d = (await convexClient().mutation(api.applications.apply, { accountId: owner(), jobId })) as AppDoc;
+export async function apply(accountId: string, jobId: string): Promise<Application> {
+  const d = (await convexClient().mutation(api.applications.apply, { accountId, jobId })) as AppDoc;
   return toApplication(d);
 }
 
-export async function getApplications(): Promise<Application[]> {
-  const docs = (await convexClient().query(api.applications.listForAccount, { accountId: owner() })) as AppDoc[];
+export async function getApplications(accountId: string): Promise<Application[]> {
+  const docs = (await convexClient().query(api.applications.listForAccount, { accountId })) as AppDoc[];
   return docs.map(toApplication);
 }
 
-export async function getApplication(jobId: string): Promise<Application | undefined> {
-  const d = (await convexClient().query(api.applications.getForJob, { accountId: owner(), jobId })) as AppDoc | null;
+export async function getApplication(accountId: string, jobId: string): Promise<Application | undefined> {
+  const d = (await convexClient().query(api.applications.getForJob, { accountId, jobId })) as AppDoc | null;
   return d ? toApplication(d) : undefined;
 }
 
+// The employer's view of a gig: who actually applied to it. Returns the owning
+// account with each one, because every employer action downstream (hire,
+// reject, mark paid) has to name the worker it is acting on.
+export async function listApplicantsForJob(jobId: string): Promise<(Application & { accountId: string })[]> {
+  const docs = (await convexClient().query(api.applications.listForJob, { jobId })) as AppDoc[];
+  return docs.map((d) => ({ ...toApplication(d), accountId: d.accountId }));
+}
+
+// The employer's inbox across several gigs at once.
+export async function listApplicantsForJobs(jobIds: string[]): Promise<(Application & { accountId: string })[]> {
+  return (await Promise.all(jobIds.map(listApplicantsForJob))).flat();
+}
+
+// Which applicant an employer action is about. Hiring, rejecting and marking
+// paid all used to act on a hardcoded worker, so the question never came up.
+// Now it does, and there are only three honest answers: the one you named, the
+// only one there is, or "say which".
+export type ApplicantChoice =
+  | { ok: true; accountId: string; application: Application }
+  | { ok: false; message: string };
+
+export async function resolveApplicant(jobId: string, workerAccountId?: string): Promise<ApplicantChoice> {
+  const applicants = await listApplicantsForJob(jobId);
+  if (applicants.length === 0) return { ok: false, message: "Nobody has applied to that gig yet." };
+  if (workerAccountId) {
+    const match = applicants.find((a) => a.accountId === workerAccountId);
+    if (!match) return { ok: false, message: "That worker has not applied to this gig." };
+    return { ok: true, accountId: match.accountId, application: match };
+  }
+  const live = applicants.filter((a) => a.status !== "rejected" && a.status !== "cancelled");
+  const pool = live.length > 0 ? live : applicants;
+  if (pool.length > 1) {
+    return { ok: false, message: "There is more than one applicant for that gig — say which worker you mean." };
+  }
+  return { ok: true, accountId: pool[0].accountId, application: pool[0] };
+}
+
+// Withdraw an application. The guard lives in the Convex mutation so a
+// concurrent assessment start cannot race it.
+export async function unapply(accountId: string, jobId: string): Promise<{ ok: boolean; message: string }> {
+  const r = (await convexClient().mutation(api.applications.remove, { accountId, jobId })) as
+    | { ok: true }
+    | { ok: false; reason: "missing" | "started" };
+  if (r.ok) return { ok: true, message: "Your application has been withdrawn." };
+  if (r.reason === "missing") return { ok: false, message: "You have not applied to that job." };
+  return {
+    ok: false,
+    message: "That assessment has already started, so the application cannot be withdrawn.",
+  };
+}
+
 async function patch(
+  accountId: string,
   jobId: string,
   fields: { status?: Application["status"]; verified?: boolean; assessmentResult?: string; requireStatus?: Application["status"]; requireUnverified?: boolean },
 ): Promise<Application | undefined> {
-  const d = (await convexClient().mutation(api.applications.setStatus, { accountId: owner(), jobId, ...fields })) as AppDoc | null;
+  const d = (await convexClient().mutation(api.applications.setStatus, { accountId, jobId, ...fields })) as AppDoc | null;
   return d ? toApplication(d) : undefined;
 }
 
@@ -93,7 +150,7 @@ export type AssessmentStart =
 export async function startAssessment(userId: string, jobId: string): Promise<AssessmentStart> {
   const job = await getJob(jobId);
   if (!job) return { ok: false, message: "No job with that id." };
-  if ((await getApplication(jobId))?.status === "cancelled") {
+  if ((await getApplication(userId, jobId))?.status === "cancelled") {
     return { ok: false, message: "The worker cancelled this assessment earlier and cannot retake it or apply to this job again." };
   }
   const startedAt = await recordAttempt(userId, jobId);
@@ -110,7 +167,7 @@ export async function startAssessment(userId: string, jobId: string): Promise<As
 // Convex mutation, so a concurrent grade-pass can't race it.
 export async function cancelAssessment(userId: string, jobId: string): Promise<Application | undefined> {
   await clearAttempt(userId, jobId);
-  return patch(jobId, {
+  return patch(userId, jobId, {
     status: "cancelled",
     assessmentResult: "Assessment cancelled by worker",
     requireStatus: "applied",
@@ -135,8 +192,8 @@ export async function gradeOralAssessment(userId: string, jobId: string, answer:
   // back to a length heuristic when no model is available.
   const { gradeOral } = await import("../grading");
   const result = await gradeOral(job, answer);
-  if (result.verified) await markVerified(jobId);
-  await recordAssessmentResult(jobId, result.verified ? "Oral assessment: passed" : "Oral assessment: not passed");
+  if (result.verified) await markVerified(userId, jobId);
+  await recordAssessmentResult(userId, jobId, result.verified ? "Oral assessment: passed" : "Oral assessment: not passed");
   return result;
 }
 
@@ -168,8 +225,8 @@ export async function gradeMcqAssessment(
   const scorePct = (correctCount / questions.length) * 100;
   const passed = scorePct >= 70;
 
-  if (passed) await markVerified(jobId);
-  await recordAssessmentResult(jobId, `MCQ: ${correctCount} of ${questions.length} (${Math.round(scorePct)}%)`);
+  if (passed) await markVerified(userId, jobId);
+  await recordAssessmentResult(userId, jobId, `MCQ: ${correctCount} of ${questions.length} (${Math.round(scorePct)}%)`);
   return {
     verified: passed,
     score: correctCount,
@@ -182,28 +239,31 @@ export async function gradeMcqAssessment(
 
 // --- Status transitions ---
 
-export const markVerified = (jobId: string) => patch(jobId, { verified: true, status: "assessed" });
-export const hireWorker = (jobId: string) => patch(jobId, { status: "hired" });
-export const rejectWorker = (jobId: string) => patch(jobId, { status: "rejected" });
-export const payWorker = (jobId: string) => patch(jobId, { status: "paid" });
+// Each of these acts on ONE worker's application. The employer-facing callers
+// get that account from listApplicantsForJob, rather than assuming a worker.
+export const markVerified = (accountId: string, jobId: string) => patch(accountId, jobId, { verified: true, status: "assessed" });
+export const hireWorker = (accountId: string, jobId: string) => patch(accountId, jobId, { status: "hired" });
+export const rejectWorker = (accountId: string, jobId: string) => patch(accountId, jobId, { status: "rejected" });
+export const payWorker = (accountId: string, jobId: string) => patch(accountId, jobId, { status: "paid" });
 
 // Attach a readable assessment outcome to the application so the employer
 // can see how the applicant actually did.
-export async function recordAssessmentResult(jobId: string, text: string): Promise<void> {
-  await patch(jobId, { assessmentResult: text });
+export async function recordAssessmentResult(accountId: string, jobId: string, text: string): Promise<void> {
+  await patch(accountId, jobId, { assessmentResult: text });
 }
 
 // Payment truth: a gig may only be marked paid when confirmed inbound money
 // (real, from Monnify) covers it on top of everything already claimed by
 // other paid gigs. The button obeys the same rule as the model: never state
 // a payment that didn't verifiably happen.
-export async function verifyPaymentCoverage(jobId: string): Promise<{ ok: boolean; message: string }> {
+export async function verifyPaymentCoverage(workerAccountId: string, jobId: string): Promise<{ ok: boolean; message: string }> {
   const job = await getJob(jobId);
   if (!job) return { ok: false, message: "No job with that id." };
-  // Applications belong to the demo worker, so coverage is checked against
-  // that worker's own wallet — inbound pay must land in THEIR account.
-  const { balance } = await getBalance(worker.id);
-  const apps = await getApplications();
+  // Coverage is checked against the wallet of the worker actually being paid:
+  // inbound money must have landed in THEIR account, and only their own other
+  // paid gigs can have claimed it.
+  const { balance } = await getBalance(workerAccountId);
+  const apps = await getApplications(workerAccountId);
   const paid = apps.filter((a) => a.status === "paid");
   let alreadyClaimed = 0;
   for (const a of paid) alreadyClaimed += (await getJob(a.jobId))?.pay ?? 0;
@@ -218,7 +278,7 @@ export async function verifyPaymentCoverage(jobId: string): Promise<{ ok: boolea
 // Everything the browser may know, sanitized: this snapshot travels to the
 // client with every agent reply, so MCQ correct answers must never be in it.
 export async function snapshot(accountId: string) {
-  const [wallet, apps, jobs] = await Promise.all([getWallet(accountId), getApplications(), listJobs()]);
+  const [wallet, apps, jobs] = await Promise.all([getWallet(accountId), getApplications(accountId), listJobs()]);
   const applications = [];
   for (const a of apps) {
     const job = await getJob(a.jobId);

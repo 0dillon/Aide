@@ -2,6 +2,9 @@ import { isValidWebhook, verifyTransaction } from "@/lib/monnify";
 import { accountIdFromWalletReference, publishEvent } from "@/lib/store";
 
 export const runtime = "nodejs";
+// Talks to the bank, which can be slow. The platform default is short enough
+// to kill the request before our own timeout can report why it failed.
+export const maxDuration = 30;
 
 // Monnify webhook receiver. Signature-checked (SHA-512 HMAC of the raw body),
 // and the transaction is ALWAYS re-fetched server-side before anything is

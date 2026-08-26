@@ -2,6 +2,9 @@ import { getAccount, getApplications, getBalance, getJob, getWallet, listApplica
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
+// Talks to the bank, which can be slow. The platform default is short enough
+// to kill the request before our own timeout can report why it failed.
+export const maxDuration = 30;
 
 // Aide's opening line when the platform spins up, built server-side from real
 // state so it always reflects the truth, never the model's imagination. What

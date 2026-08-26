@@ -42,6 +42,23 @@ function noteSuccess(path: string): void {
   console.info(`[Monnify] ${path} recovered after ${prev.count} failed attempt(s).`);
 }
 
+// What to SAY when the bank rail is unreachable. The raw failures here are
+// DOMException("The operation was aborted due to timeout"), ENOTFOUND and
+// friends — text that means nothing to anyone and less than nothing read
+// aloud to someone who cannot see a retry button. It also has to be honest:
+// the balance is unknown, which is not the same as zero, and must never be
+// presented as one.
+export function spokenProviderError(e: unknown): string {
+  const reason = reasonOf(e);
+  if (/abort|timeout|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/i.test(reason)) {
+    return "The bank did not answer in time, so I could not check your balance. Your money is safe — this is only my connection to them. Try again in a moment.";
+  }
+  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|fetch failed|network/i.test(reason)) {
+    return "I could not reach the bank just now, so I could not check your balance. Your money is safe — try again in a moment.";
+  }
+  return "I could not get your balance from the bank just now. Your money is safe — try again in a moment.";
+}
+
 async function call<T>(path: string, init: RequestInit): Promise<T> {
   try {
     const res = await fetch(`${env.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });

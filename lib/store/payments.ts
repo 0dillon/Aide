@@ -160,19 +160,52 @@ export async function cacheWalletBalance(accountId: string, inboundTotal: number
   balanceCache.set(accountId, { value: await availableFrom(accountId, inboundTotal), at: Date.now() });
 }
 
+// TEMPORARY, and deliberately awkward to leave switched on.
+//
+// AIDE_DEMO_BALANCE stands in for the real figure ONLY when the bank cannot be
+// reached at all. It is a stand-in for a number this app otherwise refuses to
+// invent, so it is hedged three ways: it does nothing unless the variable is
+// set, it never overrides a real balance the bank did return, and every single
+// use is logged loudly. It lives in .env, which is gitignored, so it cannot
+// reach a deployment unless somebody sets it there on purpose.
+//
+// Remove this once the sandbox is answering again.
+function demoBalance(): number | null {
+  const raw = process.env.AIDE_DEMO_BALANCE?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 // Real, isolated balance: confirmed inbound transfers to THIS wallet's NUBAN
 // minus this wallet's withdrawals.
-export async function getBalance(accountId: string): Promise<{ balance: number; account?: string; bankName?: string }> {
-  const w = await ensureWallet(accountId);
-  const cached = balanceCache.get(accountId);
-  if (cached && Date.now() - cached.at < BALANCE_TTL_MS && w.accountNumber) {
-    return { balance: cached.value, account: w.accountNumber, bankName: w.bankName };
+export async function getBalance(accountId: string): Promise<{ balance: number; account?: string; bankName?: string; demo?: boolean }> {
+  try {
+    const w = await ensureWallet(accountId);
+    const cached = balanceCache.get(accountId);
+    if (cached && Date.now() - cached.at < BALANCE_TTL_MS && w.accountNumber) {
+      return { balance: cached.value, account: w.accountNumber, bankName: w.bankName };
+    }
+    const { content } = await getReservedAccountTransactions(w.accountReference);
+    const inbound = content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0);
+    const balance = await availableFrom(accountId, inbound);
+    balanceCache.set(accountId, { value: balance, at: Date.now() });
+    return { balance, account: w.accountNumber, bankName: w.bankName };
+  } catch (e) {
+    const demo = demoBalance();
+    // No stand-in configured: fail exactly as before, so the page says it
+    // could not check rather than showing a number nobody verified.
+    if (demo === null) throw e;
+    // Withdrawals still come off it, or withdrawing would leave the balance
+    // unchanged and the demo would contradict itself within one conversation.
+    const balance = await availableFrom(accountId, demo).catch(() => demo);
+    const wallet = await getWallet(accountId).catch(() => null);
+    console.warn(
+      `[payments] AIDE_DEMO_BALANCE in use for ${accountId}: showing ${balance} because the bank is unreachable ` +
+        `(${(e as Error).message}). This figure is NOT from the bank. Unset AIDE_DEMO_BALANCE to disable.`,
+    );
+    return { balance, account: wallet?.accountNumber, bankName: wallet?.bankName, demo: true };
   }
-  const { content } = await getReservedAccountTransactions(w.accountReference);
-  const inbound = content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0);
-  const balance = await availableFrom(accountId, inbound);
-  balanceCache.set(accountId, { value: balance, at: Date.now() });
-  return { balance, account: w.accountNumber, bankName: w.bankName };
 }
 
 // --- Withdrawals ---

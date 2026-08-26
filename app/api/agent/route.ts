@@ -1,5 +1,5 @@
-import { deepseek } from "@ai-sdk/deepseek";
 import { streamText } from "ai";
+import { aideModel, usingFallbackProvider } from "@/lib/agent/model";
 import { makeTools } from "@/lib/agent/tools";
 import { SYSTEM_PROMPT } from "@/lib/agent/system";
 import { getAccount, snapshot } from "@/lib/store";
@@ -8,8 +8,6 @@ import { userIdFrom } from "@/lib/session";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// deepseek-chat (V3) supports tool calling; deepseek-reasoner does not.
-const MODEL = process.env.AIDE_MODEL ?? "deepseek-chat";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -30,7 +28,7 @@ function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 function spokenError(e: Error): string {
   const raw = e?.message ?? "";
   if (/authentication|api[- ]?key|401|unauthorized/i.test(raw)) {
-    return "My language model rejected its API key, so I can't answer yet. The DEEPSEEK_API_KEY in the server's .env file needs a valid key.";
+    return "My language model rejected its API key, so I can't answer yet. The server needs a valid key.";
   }
   if (/rate.?limit|429|too many requests/i.test(raw)) {
     return "My language model is rate limited right now. Please try again in a moment.";
@@ -41,7 +39,18 @@ function spokenError(e: Error): string {
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(raw)) {
     return "I couldn't reach my language model. Check the internet connection and try again.";
   }
-  return raw || "Something went wrong reaching my language model.";
+  // AbortSignal.timeout throws a DOMException reading "The operation was
+  // aborted due to timeout". It matches none of the patterns above, so it used
+  // to fall through and get read aloud in those words.
+  if (/abort|timed? ?out|UND_ERR_CONNECT_TIMEOUT|deadline/i.test(raw)) {
+    return "My language model took too long to answer. Give me a moment and try again.";
+  }
+  if (/\b5\d\d\b|internal server error|bad gateway|service unavailable|overloaded/i.test(raw)) {
+    return "My language model is having trouble at its end right now. Give me a moment and try again.";
+  }
+  // Never return `raw`. Anything unrecognised is provider or runtime text that
+  // means nothing when heard, and this string is spoken.
+  return "Something went wrong reaching my language model. Try again in a moment.";
 }
 
 // Where a tool result should send the screen, if anywhere. One place, used
@@ -96,8 +105,14 @@ function routeFor(toolName: string, result: ToolResult): string | undefined {
 // Cookies can't be set once streaming has begun, so on account switches the
 // client receives `newUserId` and signs in via POST /api/account/switch.
 export async function POST(req: Request) {
-  if (!process.env.DEEPSEEK_API_KEY) {
-    return Response.json({ error: "DEEPSEEK_API_KEY is not set. Add it to .env to enable Aide." }, { status: 500 });
+  // Either the default DeepSeek key, or a fully-configured OpenAI-compatible
+  // provider. Gating on DEEPSEEK_API_KEY alone locked out the fallback that
+  // exists precisely for when that key is dead or out of credit.
+  if (!process.env.DEEPSEEK_API_KEY && !usingFallbackProvider()) {
+    return Response.json(
+      { error: "No language model is configured. Set DEEPSEEK_API_KEY, or AIDE_OPENAI_BASE_URL with AIDE_API_KEY." },
+      { status: 500 },
+    );
   }
 
   let messages: Msg[];
@@ -133,7 +148,7 @@ export async function POST(req: Request) {
       : "\n- You have nothing saved about this user yet.";
 
   const result = streamText({
-    model: deepseek(MODEL),
+    model: aideModel(),
     system: `${SYSTEM_PROMPT}\n- The current user is ${account.name}, signed in with a ${account.role} account.${memory}`,
     messages,
     tools: makeTools(account),

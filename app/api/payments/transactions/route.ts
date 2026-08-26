@@ -1,5 +1,5 @@
 import { ensureWallet, getAccount, getWithdrawals } from "@/lib/store";
-import { getReservedAccountTransactions } from "@/lib/monnify";
+import { getReservedAccountTransactions, spokenProviderError } from "@/lib/monnify";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -23,6 +23,7 @@ export async function GET(req: Request) {
     }));
     return Response.json({ inbound, outbound: await getWithdrawals(acc.id) });
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 500 });
+    // Spoken, not read. The raw text here is DOMException/ENOTFOUND noise.
+    return Response.json({ error: spokenProviderError(e) }, { status: 500 });
   }
 }

@@ -6,6 +6,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { VoiceEngine, type VoiceState } from "./voice-engine";
 import { streamAgentReply, type Msg } from "./agent-stream";
+import { spokenClientError } from "../../lib/spoken-error";
 
 // Aide lives here, globally. One always-on voice engine, one conversation —
 // mounted in the root layout so Aide keeps listening and talking while the
@@ -154,7 +155,9 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       } catch (e) {
         const msg = (e as Error).message;
         setError(msg);
-        speak("Sorry, something went wrong. " + msg);
+        // The screen keeps the raw message; the spoken line never does. This
+        // used to read DOMException and fetch text aloud, word for word.
+        speak(spokenClientError(msg));
       } finally {
         engineRef.current?.endReply();
         setThinking(false);

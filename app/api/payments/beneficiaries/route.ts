@@ -3,6 +3,8 @@ import { validateBankAccount } from "@/lib/monnify";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
+// Saving a beneficiary name-enquiries it against the bank first.
+export const maxDuration = 30;
 
 // Saved withdrawal destinations for the signed-in user.
 export async function GET(req: Request) {

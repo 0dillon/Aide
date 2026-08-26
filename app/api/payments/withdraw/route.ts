@@ -3,6 +3,10 @@ import { confirmWithdrawal } from "@/lib/payments";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
+// Arming a withdrawal name-enquiries the destination and confirming it runs the
+// real transfer: two sequential bank calls, each with its own 8s timeout. The
+// platform default is short enough to kill the request before either can report back.
+export const maxDuration = 30;
 
 // Two-step, voice-confirmable withdrawal from the signed-in user's own
 // wallet — the same gate the agent uses.

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as store from "./store";
 import { singleTransfer, validateBankAccount } from "./monnify";
+import { spokenClientError } from "./spoken-error";
 
 // Shared payment actions used by both the agent tools and the /payments page
 // API routes, so the voice path and the screen path run the exact same code.
@@ -17,7 +18,9 @@ export async function registerPayout(
     await store.setPayout(accountId, accountNumber, bankCode, r.accountName);
     return { ok: true, accountName: r.accountName };
   } catch (e) {
-    return { ok: false, message: (e as Error).message };
+    // Spoken by Aide. Genuine bank responses ("account not found") pass
+    // through; DOMException and socket text does not.
+    return { ok: false, message: spokenClientError((e as Error).message) };
   }
 }
 
@@ -64,6 +67,8 @@ export async function confirmWithdrawal(accountId: string, spokenPhrase: string)
         : { accountName: check.accountName, accountNumber: check.account, bankCode: check.bankCode },
     };
   } catch (e) {
-    return { ok: false, message: (e as Error).message };
+    // Spoken by Aide. Genuine bank responses ("account not found") pass
+    // through; DOMException and socket text does not.
+    return { ok: false, message: spokenClientError((e as Error).message) };
   }
 }

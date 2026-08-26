@@ -24,11 +24,38 @@ function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   ]);
 }
 
+// Everything an error is carrying, flattened. A failed model call does not
+// always arrive as an Error with a message — the SDK wraps provider failures,
+// and the interesting part is often on `cause`, `statusCode` or the response
+// body rather than on `message`. When message was empty we logged an empty
+// string and told the user "something went wrong", which left nobody with
+// anything to act on: no reason on screen, no reason in the server log.
+function describeError(e: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = e;
+  for (let depth = 0; cur && depth < 4; depth++) {
+    if (seen.has(cur)) break;
+    seen.add(cur);
+    const o = cur as { name?: string; message?: string; statusCode?: number; status?: number; responseBody?: unknown; code?: string; cause?: unknown };
+    const status = o.statusCode ?? o.status;
+    if (o.name && o.name !== "Error") parts.push(o.name);
+    if (status !== undefined) parts.push(`status ${status}`);
+    if (o.code) parts.push(String(o.code));
+    if (o.message) parts.push(o.message);
+    if (typeof o.responseBody === "string" && o.responseBody) parts.push(o.responseBody.slice(0, 300));
+    cur = o.cause;
+  }
+  return parts.join(" | ") || `non-error value: ${String(e).slice(0, 200)}`;
+}
+
 // Aide reads this out, so it has to mean something when heard rather than
 // read. The raw provider text ("Authentication Fails, Your api key: ****0000
 // is invalid") tells the user nothing about what to do next.
 function spokenError(e: Error): string {
-  const raw = e?.message ?? "";
+  // Match against everything the error carries, not just message — an empty
+  // message used to fall straight through every branch to the generic line.
+  const raw = describeError(e);
   if (/authentication|api[- ]?key|401|unauthorized/i.test(raw)) {
     return "My language model rejected its API key, so I can't answer yet. The DEEPSEEK_API_KEY in the server's .env file needs a valid key.";
   }
@@ -41,7 +68,12 @@ function spokenError(e: Error): string {
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(raw)) {
     return "I couldn't reach my language model. Check the internet connection and try again.";
   }
-  return raw || "Something went wrong reaching my language model.";
+  if (/abort|timeout|ETIMEDOUT|closed|socket/i.test(raw)) {
+    return "My language model took too long to answer. Please try again.";
+  }
+  // Deliberately not the raw text: it may be an object dump or empty. The
+  // server log carries the detail; see the [agent] line for this request.
+  return "Something went wrong reaching my language model. Try again in a moment.";
 }
 
 // Where a tool result should send the screen, if anywhere. One place, used
@@ -140,7 +172,10 @@ export async function POST(req: Request) {
     maxSteps: 6,
     onError: ({ error }) => {
       failure.error = error instanceof Error ? error : new Error(String(error));
-      console.error("[agent] model call failed:", failure.error.message);
+      // Log everything the failure carries. This used to print `.message`,
+      // which for a wrapped provider error is often empty — so an outage on
+      // the live site produced a blank log line and a shrug on screen.
+      console.error("[agent] model call failed:", describeError(error));
     },
   });
 

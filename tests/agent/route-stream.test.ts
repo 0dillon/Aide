@@ -261,3 +261,42 @@ describe("moving the screen while Aide is still speaking", () => {
     expect(events.at(-1)?.navigateTo).toBeUndefined();
   });
 });
+
+describe("a failure that carries no message", () => {
+  // The live site hit exactly this: the model call failed with an error whose
+  // `.message` was empty, so every branch fell through to the generic line AND
+  // the server log printed an empty string. Nobody — user or developer — was
+  // left with anything to act on.
+  const failWithValue = async (thrown: unknown) => {
+    model.impl = (opts) => {
+      queueMicrotask(() => opts.onError?.({ error: thrown }));
+      return streamOf([], new Promise(() => {}));
+    };
+    const { events } = await drain(await ask());
+    return events.at(-1);
+  };
+
+  it("still says something, rather than an empty sentence", async () => {
+    const ev = await failWithValue(new Error(""));
+    expect(ev?.t).toBe("error");
+    expect(String(ev?.message).trim().length).toBeGreaterThan(20);
+  });
+
+  it("finds the reason on cause when message is empty", async () => {
+    // The SDK wraps provider failures; the useful part is often underneath.
+    const wrapped = new Error("");
+    (wrapped as { cause?: unknown }).cause = new Error("401 Authentication Fails");
+    const ev = await failWithValue(wrapped);
+    expect(ev?.message).toMatch(/api key/i);
+  });
+
+  it("finds it on a status code too", async () => {
+    const e = Object.assign(new Error(""), { statusCode: 429 });
+    expect((await failWithValue(e))?.message).toMatch(/try again/i);
+  });
+
+  it("never reads an object dump aloud", async () => {
+    const ev = await failWithValue({ weird: true });
+    expect(ev?.message).not.toMatch(/\[object|\{|\}/);
+  });
+});

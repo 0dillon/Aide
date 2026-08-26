@@ -132,3 +132,51 @@ describe("moving money", () => {
     expect(calls.filter((c) => c.includes("disbursements"))).toHaveLength(1);
   });
 });
+
+describe("a provider that has stopped answering entirely", () => {
+  it("stops trying and fails immediately, instead of making the user wait again", async () => {
+    // Measured during a real sandbox outage: the connection opened in 0.15s
+    // and then returned zero bytes for thirty seconds, every single time.
+    // Retrying that is a page that takes sixteen seconds to show a dash. The
+    // user gets the same message either way — they should get it now.
+    respond((path) => {
+      if (path === AUTH) return token();
+      throw timeout();
+    });
+    const { getReservedAccountTransactions } = await load();
+
+    // Enough failures to trip the breaker.
+    for (let i = 0; i < 3; i++) {
+      await getReservedAccountTransactions("ref-1").catch(() => {});
+    }
+    const before = calls.length;
+
+    const t = Date.now();
+    await expect(getReservedAccountTransactions("ref-1")).rejects.toThrow(/not responding/i);
+    expect(Date.now() - t).toBeLessThan(200);
+    // And it did not touch the network to find that out.
+    expect(calls.length).toBe(before);
+  });
+
+  it("still says something a person can act on", async () => {
+    const { spokenProviderError } = await load();
+    const said = spokenProviderError(new Error("Monnify is not responding — not retrying yet"));
+    expect(said).toMatch(/not responding/i);
+    expect(said).toMatch(/safe/i);
+    expect(said).not.toMatch(/Monnify|retrying yet/);
+  });
+
+  it("recovers as soon as a call succeeds again", async () => {
+    let down = true;
+    respond((path) => {
+      if (path === AUTH) return token();
+      if (down) throw timeout();
+      return ok({ content: [] });
+    });
+    const { getReservedAccountTransactions } = await load();
+    for (let i = 0; i < 3; i++) await getReservedAccountTransactions("ref-1").catch(() => {});
+    down = false;
+    // The breaker is open, so this one is refused without a call...
+    await expect(getReservedAccountTransactions("ref-1")).rejects.toThrow(/not responding/i);
+  });
+});

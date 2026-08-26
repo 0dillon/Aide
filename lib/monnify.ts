@@ -20,7 +20,34 @@ const CALL_TIMEOUT_MS = 8000;
 // which is the provider answering, and never on a POST that moves money.
 const RETRY_ATTEMPTS = 2;
 
+// When the provider is hard down — not slow, not flaky, but not answering at
+// all — retrying is worse than useless: it doubles how long the user waits to
+// be told the same thing. Measured against the sandbox during an outage, an
+// authenticated login opened its connection in 0.15s and then returned zero
+// bytes for thirty seconds, every time. Two attempts of that is a page that
+// takes sixteen seconds to show a dash.
+//
+// So after a run of consecutive failures, stop trying for a while and fail
+// immediately instead. The message the user gets is the same; they just get it
+// now instead of in sixteen seconds. One probe is allowed through when the
+// cooldown lapses, which is how it notices the provider is back.
+const BREAKER_AFTER = 3;
+const BREAKER_COOLDOWN_MS = 60_000;
+let openUntil = 0;
+
+function breakerOpen(): boolean {
+  return Date.now() < openUntil;
+}
+
+class ProviderDown extends Error {
+  readonly transient = true;
+  constructor() {
+    super("Monnify is not responding — not retrying yet");
+  }
+}
+
 function isTransient(e: unknown): boolean {
+  if (e instanceof ProviderDown) return true;
   const reason = reasonOf(e);
   return /abort|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|socket hang up|UND_ERR/i.test(reason);
 }
@@ -30,6 +57,8 @@ function isTransient(e: unknown): boolean {
 // of identical traces every fifteen seconds and buried every other log on the
 // machine. Repeats now collapse into a counter, and recovery says so.
 const failing = new Map<string, { reason: string; count: number }>();
+// Consecutive transient failures across ALL paths — one provider, one verdict.
+let consecutive = 0;
 
 function reasonOf(e: unknown): string {
   const cause = (e as { cause?: { code?: string } })?.cause;
@@ -66,6 +95,9 @@ function noteSuccess(path: string): void {
 // presented as one.
 export function spokenProviderError(e: unknown): string {
   const reason = reasonOf(e);
+  if (/not responding/i.test(reason)) {
+    return "The bank is not responding at the moment, so I could not check your balance. Your money is safe — I will keep trying, and you can ask me again shortly.";
+  }
   if (/abort|timeout|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/i.test(reason)) {
     return "The bank did not answer in time, so I could not check your balance. Your money is safe — this is only my connection to them. Try again in a moment.";
   }
@@ -91,16 +123,38 @@ async function attempt<T>(path: string, init: RequestInit): Promise<T> {
 // `retry` defaults to false so a caller has to opt in. Reads are safe to
 // repeat; anything that moves money is not, and must never be retried blind.
 async function call<T>(path: string, init: RequestInit, retry = false): Promise<T> {
+  // Already known to be down: do not spend the budget finding out again.
+  if (breakerOpen()) {
+    const down = new ProviderDown();
+    noteFailure(path, down);
+    throw down;
+  }
   const tries = retry ? RETRY_ATTEMPTS : 1;
   let last: unknown;
   for (let i = 0; i < tries; i++) {
     try {
       const out = await attempt<T>(path, init);
+      consecutive = 0;
+      openUntil = 0;
       noteSuccess(path);
       return out;
     } catch (e) {
       last = e;
-      if ((e as { answered?: boolean }).answered || !isTransient(e) || i === tries - 1) break;
+      // An answered error means the provider is up; it just said no.
+      if ((e as { answered?: boolean }).answered) {
+        consecutive = 0;
+        break;
+      }
+      if (!isTransient(e)) break;
+      consecutive += 1;
+      if (consecutive >= BREAKER_AFTER) {
+        openUntil = Date.now() + BREAKER_COOLDOWN_MS;
+        console.error(
+          `[Monnify] not responding after ${consecutive} attempts — failing fast for ${BREAKER_COOLDOWN_MS / 1000}s`,
+        );
+        break;
+      }
+      if (i === tries - 1) break;
       console.warn(`[Monnify] ${path} ${reasonOf(e)} — retrying once`);
     }
   }

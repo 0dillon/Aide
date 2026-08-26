@@ -1,6 +1,9 @@
 import { validateBankAccount } from "@/lib/monnify";
 
 export const runtime = "nodejs";
+// Talks to the bank, which can be slow. The platform default is short enough
+// to kill the request before our own timeout can report why it failed.
+export const maxDuration = 30;
 
 // Pure name enquiry for the inline validation UI: as the user fills in bank
 // details, the form shows "Account found: NAME" or "Bank details not found"

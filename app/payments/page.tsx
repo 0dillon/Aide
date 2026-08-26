@@ -8,7 +8,10 @@ type Withdrawal = { amount: number; accountName: string; status: string; at: num
 type Beneficiary = { accountName: string; accountNumber: string; bankCode: string; bankName?: string };
 
 type Summary = {
-  balance: number;
+  // null when the bank could not be reached. Unknown is not zero, and must
+  // never be rendered as one.
+  balance: number | null;
+  balanceUnavailable?: string;
   name?: string;
   role?: "worker" | "employer";
   accountNumber?: string;
@@ -80,6 +83,10 @@ export default function PaymentsPage() {
   // Leaving the page with a withdrawal armed must hand the mic back to Aide.
   const endCaptureRef = useRef(endCapture);
   endCaptureRef.current = endCapture;
+  // load() has an empty dependency array, so reach speak through a ref rather
+  // than capturing the first render's copy.
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
   useEffect(() => () => endCaptureRef.current(), []);
 
   const load = useCallback(async () => {
@@ -95,6 +102,10 @@ export default function PaymentsPage() {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not load your payment details.");
       setSummary(data);
+      // Say it, don't just show it. A red line on screen is not a notification
+      // to someone who cannot see the screen, and a dash where a balance
+      // should be is silent.
+      if (data?.balanceUnavailable) speakRef.current(data.balanceUnavailable);
       if (h && !h.error) setHistory(h);
       if (b?.beneficiaries) setBeneficiaries(b.beneficiaries);
     } catch (e) {
@@ -312,7 +323,16 @@ export default function PaymentsPage() {
       {/* Balance */}
       <section id="balance" aria-label="Balance" className="mt-8 rounded-xl border-2 border-[var(--line)] bg-white p-6">
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Confirmed balance</h2>
-        <p className="mt-2 text-5xl font-bold tabular-nums">{loading ? "…" : summary ? naira(summary.balance) : "—"}</p>
+        <p className="mt-2 text-5xl font-bold tabular-nums">
+          {loading ? "…" : summary && summary.balance !== null ? naira(summary.balance) : "—"}
+        </p>
+        {summary?.balanceUnavailable && (
+          // role="alert" so a screen reader announces it without being asked;
+          // Aide says it aloud too, on load, in the effect below.
+          <p role="alert" className="mt-2 font-bold text-[var(--alert)]">
+            {summary.balanceUnavailable}
+          </p>
+        )}
         <div className="mt-4 flex flex-wrap gap-3">
           <button
             onClick={load}
@@ -322,7 +342,14 @@ export default function PaymentsPage() {
             {loading ? "Checking…" : "Refresh"}
           </button>
           <button
-            onClick={() => summary && speak(`Your confirmed balance is ${summary.balance} naira.`)}
+            onClick={() =>
+              summary &&
+              speak(
+                summary.balance === null
+                  ? summary.balanceUnavailable || "I could not get your balance from the bank just now."
+                  : `Your confirmed balance is ${summary.balance} naira.`,
+              )
+            }
             disabled={!summary}
             className="min-h-12 rounded-lg bg-[var(--accent)] px-5 py-3 font-bold text-white disabled:opacity-50"
           >

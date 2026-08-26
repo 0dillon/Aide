@@ -44,9 +44,53 @@ function spokenError(e: Error): string {
   return raw || "Something went wrong reaching my language model.";
 }
 
+// Where a tool result should send the screen, if anywhere. One place, used
+// both mid-stream (as each tool returns) and again at the end as a fallback,
+// so the two can never disagree about where "there" is.
+type ToolResult = {
+  page?: string;
+  section?: string;
+  jobId?: string;
+  ok?: boolean;
+  filters?: Record<string, unknown>;
+} | undefined;
+
+const PAGE_ROUTES: Record<string, string> = {
+  home: "/",
+  jobs: "/jobs",
+  payments: "/payments",
+  profile: "/profile",
+  signup: "/signup",
+};
+
+function routeFor(toolName: string, result: ToolResult): string | undefined {
+  if (!result) return undefined;
+  if (toolName === "open_page" && result.page) {
+    return PAGE_ROUTES[result.page] + (result.section ? `#${result.section}` : "");
+  }
+  // Reading or sending a message opens that gig's thread on screen — the
+  // threads sit collapsed, so without this Aide narrates a conversation the
+  // user cannot see.
+  if ((toolName === "read_messages" || toolName === "send_message") && result.ok && result.jobId) {
+    return `/jobs?thread=${result.jobId}#onboarding`;
+  }
+  if (toolName === "start_assessment" && result.ok && result.jobId) {
+    return `/jobs?assessment=${result.jobId}`;
+  }
+  if (toolName === "filter_jobs" && result.ok) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(result.filters ?? {})) {
+      if (v !== undefined && v !== null) params.set(k, String(v));
+    }
+    return `/jobs?${params.toString()}#listings`;
+  }
+  return undefined;
+}
+
 // Streams the reply as newline-delimited JSON so the browser can start
 // speaking the first sentence while the rest is still generating:
 //   { t: "delta", text }                        — a chunk of the reply text
+//   { t: "nav", navigateTo }                     — move the screen, mid-reply
 //   { t: "done", navigateTo?, newUserId?, state } — final metadata
 //   { t: "error", message }                     — something broke mid-stream
 // Cookies can't be set once streaming has begun, so on account switches the
@@ -104,11 +148,37 @@ export async function POST(req: Request) {
   const emit = (controller: ReadableStreamDefaultController, obj: unknown) =>
     controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
 
+  // Where a turn's time actually goes. Aide feeling slow is a bug report with
+  // no detail in it — the model, the tool calls, the steps deadline and the
+  // snapshot are four different waits and they need telling apart.
+  const t0 = Date.now();
+  let firstTokenAt = 0;
+
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        for await (const text of result.textStream) {
-          if (text) emit(controller, { t: "delta", text });
+        // Read the FULL stream, not just the text. Tool results arrive here the
+        // instant the tool returns, while the model is still writing the
+        // sentence about it — which is the only moment early enough to be
+        // useful. Waiting for the end of the stream meant Aide said "you're on
+        // the jobs page" and the screen moved several seconds later, after the
+        // remaining text, the steps deadline and a snapshot. To someone who
+        // cannot see the screen, that is indistinguishable from Aide lying
+        // about where they are.
+        let navigateTo: string | undefined;
+        for await (const part of result.fullStream) {
+          if (part.type === "text-delta") {
+            if (part.textDelta) {
+              if (!firstTokenAt) firstTokenAt = Date.now();
+              emit(controller, { t: "delta", text: part.textDelta });
+            }
+          } else if (part.type === "tool-result") {
+            const to = routeFor(part.toolName, part.result as ToolResult);
+            if (to) {
+              navigateTo = to;
+              emit(controller, { t: "nav", navigateTo: to });
+            }
+          }
         }
         // An empty stream means failure, not a short reply — see above.
         if (failure.error) throw failure.error;
@@ -125,28 +195,14 @@ export async function POST(req: Request) {
             }[],
         );
 
-        // If the model opened a screen (or filtered jobs, or started an
-        // assessment), tell the browser where to route.
-        const routes: Record<string, string> = { home: "/", jobs: "/jobs", payments: "/payments", profile: "/profile", signup: "/signup" };
-        let navigateTo: string | undefined;
-        const opened = toolResults.find((t) => t.toolName === "open_page")?.result;
-        if (opened?.page) navigateTo = routes[opened.page] + (opened.section ? `#${opened.section}` : "");
-        // Reading or sending a message opens that gig's thread on screen —
-        // the threads are collapsed by default, so without this Aide would be
-        // narrating a conversation the user cannot see.
-        const thread = toolResults.find(
-          (t) => (t.toolName === "read_messages" || t.toolName === "send_message") && t.result?.ok,
-        )?.result;
-        if (thread?.jobId) navigateTo = "/jobs?thread=" + thread.jobId + "#onboarding";
-        const started = toolResults.find((t) => t.toolName === "start_assessment")?.result;
-        if (started?.ok && started.jobId) navigateTo = `/jobs?assessment=${started.jobId}`;
-        const filtered = toolResults.find((t) => t.toolName === "filter_jobs")?.result;
-        if (filtered?.ok) {
-          const params = new URLSearchParams();
-          for (const [k, v] of Object.entries(filtered.filters ?? {})) {
-            if (v !== undefined && v !== null) params.set(k, String(v));
+        // Belt and braces: if a tool result somehow never reached the stream
+        // above, recover the destination from the finished steps. The client
+        // ignores a repeat of somewhere it has already gone.
+        if (!navigateTo) {
+          for (const t of toolResults) {
+            const to = routeFor(t.toolName, t.result as ToolResult);
+            if (to) navigateTo = to;
           }
-          navigateTo = `/jobs?${params.toString()}#listings`;
         }
 
         // If the model created or switched to an account, the client signs
@@ -159,7 +215,16 @@ export async function POST(req: Request) {
         // POST /api/auth/logout and restarts when it sees this flag.
         const loggedOut = !!toolResults.find((t) => t.toolName === "log_out" && t.result?.ok);
 
-        emit(controller, { t: "done", navigateTo, newUserId, loggedOut, state: await snapshot(account.id) });
+        const streamedAt = Date.now();
+        const state = await snapshot(account.id);
+        const doneAt = Date.now();
+        // One line per turn. The gap between first token and end of stream is
+        // the model; the gap after it is ours.
+        console.log(
+          `[agent] first token ${firstTokenAt ? firstTokenAt - t0 : -1}ms · stream ${streamedAt - t0}ms · ` +
+            `snapshot ${doneAt - streamedAt}ms · total ${doneAt - t0}ms`,
+        );
+        emit(controller, { t: "done", navigateTo, newUserId, loggedOut, state });
       } catch (e) {
         emit(controller, { t: "error", message: spokenError(e as Error) });
       }

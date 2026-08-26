@@ -3,6 +3,9 @@ import { getAccount } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
+// Talks to the bank, which can be slow. The platform default is short enough
+// to kill the request before our own timeout can report why it failed.
+export const maxDuration = 30;
 
 // Validate (name enquiry) and save the signed-in user's withdrawal destination.
 export async function POST(req: Request) {

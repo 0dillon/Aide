@@ -101,6 +101,20 @@ async function patch(
 
 const attemptKey = (userId: string, jobId: string) => `${userId}-${jobId}`;
 
+// Begin the timed part. Separate from startAssessment on purpose: the clock
+// used to start the instant the tool returned, while Aide was still explaining
+// the rules and reading the questions aloud. On a two-minute assessment, being
+// read three questions and their options can eat most of the time before the
+// worker has heard the first one — and they cannot see a countdown to notice.
+// Safe to call more than once; the first call wins.
+export async function beginAssessment(userId: string, jobId: string): Promise<number> {
+  const now = Date.now();
+  return (await convexClient().mutation(api.jobs.beginAttempt, {
+    key: attemptKey(userId, jobId),
+    startedAt: now,
+  })) as number;
+}
+
 export async function recordAttempt(userId: string, jobId: string): Promise<number> {
   const now = Date.now();
   await convexClient().mutation(api.jobs.recordAttempt, { key: attemptKey(userId, jobId), startedAt: now });
@@ -153,7 +167,9 @@ export async function startAssessment(userId: string, jobId: string): Promise<As
   if ((await getApplication(userId, jobId))?.status === "cancelled") {
     return { ok: false, message: "The worker cancelled this assessment earlier and cannot retake it or apply to this job again." };
   }
-  const startedAt = await recordAttempt(userId, jobId);
+  // Prepared, not begun: the clock starts when the worker is actually ready,
+  // which the client signals once Aide has stopped talking.
+  const startedAt = 0;
   if ((job.assessmentType || "oral") === "mcq") {
     const questions = job.mcqQuestions?.map(({ question, options }) => ({ question, options })) || [];
     return { ok: true, jobId: job.id, assessmentType: "mcq", questions, timeLimit: job.timeLimit, startedAt };

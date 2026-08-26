@@ -1,4 +1,4 @@
-import { cancelAssessment, getJob, gradeOralAssessment, gradeMcqAssessment, startAssessment } from "@/lib/store";
+import { beginAssessment, cancelAssessment, getJob, gradeOralAssessment, gradeMcqAssessment, startAssessment } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -20,6 +20,13 @@ export async function POST(req: Request) {
   const { jobId, answer, answers, action } = body;
   const job = jobId ? await getJob(jobId) : undefined;
   if (!job) return Response.json({ error: "No job with that id." }, { status: 400 });
+
+  // The worker is actually ready — start the clock. Sent once Aide has
+  // finished speaking, not when the questions were handed out.
+  if (action === "begin") {
+    const startedAt = await beginAssessment(userId, job.id);
+    return Response.json({ ok: true, startedAt, timeLimit: job.timeLimit ?? null });
+  }
 
   // Cancellation: one-way lockout.
   if (action === "cancel") {

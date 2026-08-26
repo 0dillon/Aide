@@ -116,9 +116,23 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
       engineRef.current?.beginReply();
       let loggedOut = false;
       try {
+        // Navigating mid-reply rather than after it: Aide is still saying
+        // "opening that now" when this fires, so the words and the screen
+        // agree. Waiting for the end of the stream made Aide announce a page
+        // it had not moved to yet, which a user who cannot see the screen has
+        // no way to catch.
+        const goTo = (to: string) => {
+          router.push(to);
+          const hash = to.split("#")[1];
+          if (hash) {
+            setTimeout(() => document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" }), 700);
+          }
+        };
+
         const result = await streamAgentReply(next, {
           onDelta: (full) => setMessages([...next, { role: "assistant", content: full }]),
           onSentence: (s) => engineRef.current?.queueSpeak(s),
+          onNavigate: goTo,
         });
         loggedOut = !!result.loggedOut;
 
@@ -133,14 +147,10 @@ export function AideProvider({ children }: { children: React.ReactNode }) {
           setAccountId(result.newUserId);
           setMessages([{ role: "assistant", content: result.full }]);
         }
-        if (result.navigateTo) {
-          router.push(result.navigateTo);
-          // Follow Aide's words: scroll to the section it is talking about.
-          const hash = result.navigateTo.split("#")[1];
-          if (hash) {
-            setTimeout(() => document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" }), 700);
-          }
-        }
+        // Fallback only: onNavigate has usually already moved the screen, and
+        // agent-stream clears navigateTo when it has, so this fires just for a
+        // destination that arrived only in the final event.
+        if (result.navigateTo && !result.navigated) goTo(result.navigateTo);
       } catch (e) {
         const msg = (e as Error).message;
         setError(msg);

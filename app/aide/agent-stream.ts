@@ -8,12 +8,17 @@ export type AgentStreamResult = {
   loggedOut?: boolean;
   full: string;
   navigateTo?: string;
+  // True once the screen has already been moved mid-stream, so the caller does
+  // not push the same route a second time.
+  navigated?: boolean;
   newUserId?: string;
 };
 
 export type AgentStreamHandlers = {
   // The reply so far — called on every delta for live transcript updates.
   onDelta: (full: string) => void;
+  // Called as soon as Aide actually moves the screen, mid-reply.
+  onNavigate?: (to: string) => void;
   // A completed sentence, ready to be spoken while the rest still streams.
   onSentence: (sentence: string) => void;
 };
@@ -92,8 +97,20 @@ export async function streamAgentReply(messages: Msg[], handlers: AgentStreamHan
       const { sentences, rest } = extractSentences(unspoken);
       unspoken = rest;
       for (const s of sentences) handlers.onSentence(s);
+    } else if (ev.t === "nav") {
+      // Mid-reply: move the screen the moment the tool that moved it returns,
+      // rather than after the whole reply has finished streaming. Aide is
+      // usually still saying "opening that now" as this fires, which is the
+      // point — the words and the screen should agree.
+      if (ev.navigateTo && ev.navigateTo !== result.navigateTo) {
+        result.navigateTo = ev.navigateTo;
+        result.navigated = true;
+        handlers.onNavigate?.(ev.navigateTo);
+      }
     } else if (ev.t === "done") {
-      result.navigateTo = ev.navigateTo;
+      // Only if the mid-stream event never arrived; navigating twice to the
+      // same place would re-render the screen under the user for no reason.
+      if (ev.navigateTo && ev.navigateTo !== result.navigateTo) result.navigateTo = ev.navigateTo;
       result.newUserId = ev.newUserId;
       result.loggedOut = ev.loggedOut;
     } else if (ev.t === "error") {

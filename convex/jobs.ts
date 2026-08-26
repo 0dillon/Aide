@@ -68,6 +68,21 @@ export const getAttempt = query({
   },
 });
 
+// Start the clock, but only if it is not already running. The assessment is
+// prepared (questions handed out) before it begins (clock started), and
+// several things can signal the beginning — the panel appearing, Aide
+// finishing its explanation — so this has to be safe to call more than once.
+// Overwriting would hand back the full time limit on every repeat.
+export const beginAttempt = mutation({
+  args: { key: v.string(), startedAt: v.number() },
+  handler: async (ctx, { key, startedAt }) => {
+    const row = await ctx.db.query("attempts").withIndex("by_key", (q) => q.eq("key", key)).first();
+    if (row) return row.startedAt;
+    await ctx.db.insert("attempts", { key, startedAt });
+    return startedAt;
+  },
+});
+
 export const recordAttempt = mutation({
   args: { key: v.string(), startedAt: v.number() },
   handler: async (ctx, { key, startedAt }) => {

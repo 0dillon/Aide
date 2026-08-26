@@ -20,10 +20,13 @@ export function AssessmentPanel({
   onClose: () => void;
   reload: () => Promise<void> | void;
 }) {
-  const { listening, capturing, interim, supported, speak, beginCapture, endCapture } = useAide();
+  const { listening, capturing, interim, speaking, thinking, supported, speak, beginCapture, endCapture } = useAide();
   const [answer, setAnswer] = useState("");
   const [mcqAnswers, setMcqAnswers] = useState<number[]>(() => new Array(assessment.questions?.length ?? 0).fill(-1));
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  // When the clock actually started. Null until the worker is ready, which is
+  // not the same moment the questions were handed out.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,13 +72,49 @@ export function AssessmentPanel({
     return () => endCapture();
   }, [assessment, beginCapture, endCapture, speak]);
 
+  // Start the clock only once Aide has stopped talking. It used to start the
+  // instant the tool returned, so the explanation, the rules and the reading
+  // of every question and option all burned time the worker never got — and
+  // with no visible countdown, the first they knew of it was being told time
+  // was up. The server keeps the first start it is given, so this cannot be
+  // used to award extra time by asking again.
+  const begunRef = useRef(false);
+  useEffect(() => {
+    if (begunRef.current || speaking || thinking) return;
+    begunRef.current = true;
+    let cancelled = false;
+    fetch("/api/jobs/assessment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId: assessment.job.id, action: "begin" }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled && d?.startedAt) setStartedAt(d.startedAt);
+      })
+      .catch(() => {
+        // The clock is the server's to keep; if this call fails, fall back to
+        // now rather than leaving the worker with no countdown at all.
+        if (!cancelled) setStartedAt(Date.now());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [speaking, thinking, assessment.job.id]);
+
   // Timer countdown and expiration handling.
   useEffect(() => {
     if (!assessment.timeLimit) {
       setTimeLeft(null);
       return;
     }
-    const elapsed = Math.floor((Date.now() - (assessment.startedAt || Date.now())) / 1000);
+    // Not begun yet — show the full limit rather than counting down while
+    // Aide is still reading the questions out.
+    if (startedAt === null) {
+      setTimeLeft(assessment.timeLimit);
+      return;
+    }
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
     setTimeLeft(Math.max(0, assessment.timeLimit - elapsed));
 
     const interval = setInterval(() => {
@@ -95,7 +134,7 @@ export function AssessmentPanel({
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assessment]);
+  }, [assessment, startedAt]);
 
   // Spoken countdown alerts as the limit approaches. Skipped when the alert
   // equals the full limit (no point announcing "one minute left" at start).

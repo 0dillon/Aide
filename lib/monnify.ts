@@ -7,13 +7,58 @@ let cached: TokenCache | null = null;
 // Fail fast rather than sitting on a connection that is not going to open. The
 // default is around ten seconds, which is a long time to hold a request that is
 // already doomed.
+//
+// The sandbox's latency is not merely slow, it is erratic: the same auth call
+// measured 0.5s, 4.1s and 13.6s in three consecutive attempts, the last of
+// which spent 13.2s just opening the connection. One budget cannot serve both
+// callers, so there are two.
 const CALL_TIMEOUT_MS = 8000;
+// One retry, because that spread means a slow attempt says almost nothing
+// about the next one. A second try usually lands in well under a second, and a
+// user staring at a dash would rather wait than be told to come back.
+// Retried ONLY on a timeout or a connection failure — never on an HTTP error,
+// which is the provider answering, and never on a POST that moves money.
+const RETRY_ATTEMPTS = 2;
+
+// When the provider is hard down — not slow, not flaky, but not answering at
+// all — retrying is worse than useless: it doubles how long the user waits to
+// be told the same thing. Measured against the sandbox during an outage, an
+// authenticated login opened its connection in 0.15s and then returned zero
+// bytes for thirty seconds, every time. Two attempts of that is a page that
+// takes sixteen seconds to show a dash.
+//
+// So after a run of consecutive failures, stop trying for a while and fail
+// immediately instead. The message the user gets is the same; they just get it
+// now instead of in sixteen seconds. One probe is allowed through when the
+// cooldown lapses, which is how it notices the provider is back.
+const BREAKER_AFTER = 3;
+const BREAKER_COOLDOWN_MS = 60_000;
+let openUntil = 0;
+
+function breakerOpen(): boolean {
+  return Date.now() < openUntil;
+}
+
+class ProviderDown extends Error {
+  readonly transient = true;
+  constructor() {
+    super("Monnify is not responding — not retrying yet");
+  }
+}
+
+function isTransient(e: unknown): boolean {
+  if (e instanceof ProviderDown) return true;
+  const reason = reasonOf(e);
+  return /abort|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|socket hang up|UND_ERR/i.test(reason);
+}
 
 // A provider outage is not news after the first time. Every failure used to
 // print the error object and its stack, so an unreachable host produced a wall
 // of identical traces every fifteen seconds and buried every other log on the
 // machine. Repeats now collapse into a counter, and recovery says so.
 const failing = new Map<string, { reason: string; count: number }>();
+// Consecutive transient failures across ALL paths — one provider, one verdict.
+let consecutive = 0;
 
 function reasonOf(e: unknown): string {
   const cause = (e as { cause?: { code?: string } })?.cause;
@@ -50,6 +95,9 @@ function noteSuccess(path: string): void {
 // presented as one.
 export function spokenProviderError(e: unknown): string {
   const reason = reasonOf(e);
+  if (/not responding/i.test(reason)) {
+    return "The bank is not responding at the moment, so I could not check your balance. Your money is safe — I will keep trying, and you can ask me again shortly.";
+  }
   if (/abort|timeout|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/i.test(reason)) {
     return "The bank did not answer in time, so I could not check your balance. Your money is safe — this is only my connection to them. Try again in a moment.";
   }
@@ -59,40 +107,87 @@ export function spokenProviderError(e: unknown): string {
   return "I could not get your balance from the bank just now. Your money is safe — try again in a moment.";
 }
 
-async function call<T>(path: string, init: RequestInit): Promise<T> {
-  try {
-    const res = await fetch(`${env.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
-    const body = (await res.json()) as { requestSuccessful: boolean; responseMessage: string; responseBody: T };
-    if (!res.ok || !body.requestSuccessful) {
-      throw new Error(`Monnify ${path} failed (${res.status}): ${body.responseMessage ?? "unknown error"}`);
-    }
-    noteSuccess(path);
-    return body.responseBody;
-  } catch (e) {
-    noteFailure(path, e);
-    throw e;
+async function attempt<T>(path: string, init: RequestInit): Promise<T> {
+  const res = await fetch(`${env.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
+  const body = (await res.json()) as { requestSuccessful: boolean; responseMessage: string; responseBody: T };
+  if (!res.ok || !body.requestSuccessful) {
+    // The provider answered. Retrying will get the same answer, and on a
+    // money-moving call it might get a second transfer instead.
+    throw Object.assign(new Error(`Monnify ${path} failed (${res.status}): ${body.responseMessage ?? "unknown error"}`), {
+      answered: true,
+    });
   }
+  return body.responseBody;
+}
+
+// `retry` defaults to false so a caller has to opt in. Reads are safe to
+// repeat; anything that moves money is not, and must never be retried blind.
+async function call<T>(path: string, init: RequestInit, retry = false): Promise<T> {
+  // Already known to be down: do not spend the budget finding out again.
+  if (breakerOpen()) {
+    const down = new ProviderDown();
+    noteFailure(path, down);
+    throw down;
+  }
+  const tries = retry ? RETRY_ATTEMPTS : 1;
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const out = await attempt<T>(path, init);
+      consecutive = 0;
+      openUntil = 0;
+      noteSuccess(path);
+      return out;
+    } catch (e) {
+      last = e;
+      // An answered error means the provider is up; it just said no.
+      if ((e as { answered?: boolean }).answered) {
+        consecutive = 0;
+        break;
+      }
+      if (!isTransient(e)) break;
+      consecutive += 1;
+      if (consecutive >= BREAKER_AFTER) {
+        openUntil = Date.now() + BREAKER_COOLDOWN_MS;
+        console.error(
+          `[Monnify] not responding after ${consecutive} attempts — failing fast for ${BREAKER_COOLDOWN_MS / 1000}s`,
+        );
+        break;
+      }
+      if (i === tries - 1) break;
+      console.warn(`[Monnify] ${path} ${reasonOf(e)} — retrying once`);
+    }
+  }
+  noteFailure(path, last);
+  throw last;
 }
 
 // Auth: Basic base64(apiKey:secretKey) -> bearer token (~1h). Cached until 60s before expiry.
 export async function getToken(): Promise<string> {
   if (cached && Date.now() < cached.expiresAt) return cached.token;
   const basic = Buffer.from(`${env.apiKey}:${env.secretKey}`).toString("base64");
-  const body = await call<{ accessToken: string; expiresIn: number }>("/api/v1/auth/login", {
-    method: "POST",
-    headers: { Authorization: `Basic ${basic}` },
-  });
+  // Retried: this is a read of a token, it moves nothing, and it is the call
+  // most likely to be the slow one — everything else waits behind it.
+  const body = await call<{ accessToken: string; expiresIn: number }>(
+    "/api/v1/auth/login",
+    { method: "POST", headers: { Authorization: `Basic ${basic}` } },
+    true,
+  );
   cached = { token: body.accessToken, expiresAt: Date.now() + (body.expiresIn - 60) * 1000 };
   return body.accessToken;
 }
 
-async function authed<T>(path: string, method: string, payload?: unknown): Promise<T> {
+async function authed<T>(path: string, method: string, payload?: unknown, retry = false): Promise<T> {
   const token = await getToken();
-  return call<T>(path, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: payload ? JSON.stringify(payload) : undefined,
-  });
+  return call<T>(
+    path,
+    {
+      method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: payload ? JSON.stringify(payload) : undefined,
+    },
+    retry,
+  );
 }
 
 export type ReservedAccount = {
@@ -129,7 +224,12 @@ export function createReservedAccount(input: {
 // the same NUBAN across server restarts instead of trying to mint a new one
 // (Monnify allows only one reserved account per customer).
 export function getReservedAccount(accountReference: string): Promise<ReservedAccount> {
-  return authed<ReservedAccount>(`/api/v2/bank-transfer/reserved-accounts/${encodeURIComponent(accountReference)}`, "GET");
+  return authed<ReservedAccount>(
+    `/api/v2/bank-transfer/reserved-accounts/${encodeURIComponent(accountReference)}`,
+    "GET",
+    undefined,
+    true,
+  );
 }
 
 export type ReservedTxn = {
@@ -149,9 +249,13 @@ export async function getReservedAccountTransactions(accountReference: string): 
   const all: ReservedTxn[] = [];
   let page = 0;
   while (true) {
+    // Retried: a read, and the call the payments page is waiting on. This is
+    // where an erratic sandbox turned into "I could not check your balance".
     const res = await authed<{ content: ReservedTxn[] }>(
       `/api/v1/bank-transfer/reserved-accounts/transactions?accountReference=${ref}&page=${page}&size=100`,
-      "GET"
+      "GET",
+      undefined,
+      true,
     );
     all.push(...res.content);
     if (res.content.length < 100) break;
@@ -184,6 +288,8 @@ export function singleTransfer(input: {
   destinationBankCode: string;
   destinationAccountName: string;
 }): Promise<TransferResult> {
+  // Deliberately NOT retried. A timeout here means we do not know whether the
+  // transfer went through, and trying again could send the money twice.
   return authed<TransferResult>("/api/v2/disbursements/single", "POST", {
     amount: input.amount,
     reference: input.reference,

@@ -51,7 +51,13 @@ type Validation =
 
 export default function PaymentsPage() {
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [history, setHistory] = useState<{ inbound: Txn[]; outbound: Withdrawal[] } | null>(null);
+  // inbound is null when the bank could not be reached — which is NOT the same
+  // as no payments, and must never be shown as such.
+  const [history, setHistory] = useState<{
+    inbound: Txn[] | null;
+    inboundUnavailable?: string;
+    outbound: Withdrawal[];
+  } | null>(null);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -554,7 +560,13 @@ export default function PaymentsPage() {
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Transaction history</h2>
 
         <h3 className="mt-4 text-lg font-bold">Money in</h3>
-        {!history || history.inbound.length === 0 ? (
+        {history?.inbound === null ? (
+          // "No payments received yet" here would read as "nobody paid you",
+          // which is a claim we cannot make when we could not look.
+          <p role="alert" className="mt-1 font-bold text-[var(--alert)]">
+            {history.inboundUnavailable || "I could not reach the bank to list payments received."}
+          </p>
+        ) : !history || history.inbound.length === 0 ? (
           <p className="mt-1 text-[var(--ink-soft)]">No payments received yet.</p>
         ) : (
           <ul className="mt-2 divide-y divide-[var(--line)]">

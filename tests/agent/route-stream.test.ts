@@ -29,9 +29,13 @@ vi.mock("@/lib/store", () => ({
 
 const { POST } = await import("../../app/api/agent/route");
 
-const streamOf = (text: string[], steps: any) => ({
-  textStream: (async function* () {
-    for (const t of text) yield t;
+// The route reads fullStream, not textStream: tool results arrive there the
+// moment the tool returns, which is the only point early enough to move the
+// screen while Aide is still saying it is moving.
+const streamOf = (text: string[], steps: any, midStreamTools: { toolName: string; result: any }[] = []) => ({
+  fullStream: (async function* () {
+    for (const t of text) yield { type: "text-delta", textDelta: t };
+    for (const tr of midStreamTools) yield { type: "tool-result", ...tr };
   })(),
   steps,
 });
@@ -89,8 +93,8 @@ describe("the stream always terminates", () => {
 
   it("reports a thrown error rather than dying silently", async () => {
     model.impl = () => ({
-      textStream: (async function* () {
-        yield "starting";
+      fullStream: (async function* () {
+        yield { type: "text-delta", textDelta: "starting" };
         throw new Error("connection reset");
       })(),
       steps: Promise.resolve([]),
@@ -195,5 +199,65 @@ describe("request validation", () => {
 
   it("rejects a missing messages field", async () => {
     expect((await ask({})).status).toBe(400);
+  });
+});
+
+describe("moving the screen while Aide is still speaking", () => {
+  // Aide announces the page as it streams, sentence by sentence. Navigation
+  // used to be sent only in the final `done` event — after the rest of the
+  // text, after the steps deadline, after a snapshot — so Aide said "you are
+  // on the jobs page" seconds before the screen moved. Someone who cannot see
+  // the screen has no way to catch that; to them Aide simply lied.
+  const navEvents = (events: any[]) => events.filter((e) => e.t === "nav");
+
+  it("sends the destination as soon as the tool returns", async () => {
+    model.impl = () =>
+      streamOf(["Opening your payments now."], Promise.resolve([]), [
+        { toolName: "open_page", result: { ok: true, page: "payments", section: "balance" } },
+      ]);
+    const { events } = await drain(await ask());
+    expect(navEvents(events)[0]?.navigateTo).toBe("/payments#balance");
+  });
+
+  it("sends it before the reply has finished", async () => {
+    // The whole point: the nav event must not be last.
+    model.impl = () =>
+      streamOf(["Opening that."], Promise.resolve([]), [
+        { toolName: "open_page", result: { ok: true, page: "jobs" } },
+      ]);
+    const { events } = await drain(await ask());
+    const navAt = events.findIndex((e) => e.t === "nav");
+    const doneAt = events.findIndex((e) => e.t === "done");
+    expect(navAt).toBeGreaterThan(-1);
+    expect(navAt).toBeLessThan(doneAt);
+  });
+
+  it("still finds the destination when only the finished steps carry it", async () => {
+    // Belt and braces: a tool result that never reached the stream.
+    model.impl = () =>
+      streamOf(["Opening that."], Promise.resolve([
+        { toolResults: [{ toolName: "open_page", result: { ok: true, page: "profile" } }] },
+      ]));
+    const { events } = await drain(await ask());
+    expect(events.at(-1)?.navigateTo).toBe("/profile");
+  });
+
+  it("routes an assessment to the panel that runs it", async () => {
+    model.impl = () =>
+      streamOf(["Starting your assessment."], Promise.resolve([]), [
+        { toolName: "start_assessment", result: { ok: true, jobId: "g-1" } },
+      ]);
+    const { events } = await drain(await ask());
+    expect(navEvents(events)[0]?.navigateTo).toBe("/jobs?assessment=g-1");
+  });
+
+  it("does not move the screen for a tool that went nowhere", async () => {
+    model.impl = () =>
+      streamOf(["Your balance is twelve thousand naira."], Promise.resolve([]), [
+        { toolName: "get_balance", result: { ok: true, balance: 12000 } },
+      ]);
+    const { events } = await drain(await ask());
+    expect(navEvents(events)).toHaveLength(0);
+    expect(events.at(-1)?.navigateTo).toBeUndefined();
   });
 });

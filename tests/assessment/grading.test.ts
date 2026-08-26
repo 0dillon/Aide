@@ -19,7 +19,7 @@ vi.mock("../../lib/convex-server", () => ({
   publishConvexEvent: () => Promise.resolve(),
 }));
 
-const { gradeMcqAssessment, gradeOralAssessment, startAssessment, timeRemaining } = await import(
+const { beginAssessment, gradeMcqAssessment, gradeOralAssessment, startAssessment, timeRemaining } = await import(
   "../../lib/store/applications"
 );
 
@@ -50,6 +50,8 @@ beforeEach(() => {
     "jobs:listPosted": () => [QUIZ],
     "jobs:getAttempt": () => Date.now() - 5000,
     "jobs:recordAttempt": () => null,
+    // Returns the start it kept, which is how "first call wins" is enforced.
+    "jobs:beginAttempt": (a: any) => a.startedAt,
     "jobs:clearAttempt": () => null,
     "applications:setStatus": () => ({ _id: "a1", accountId: "demo-worker", jobId: "g-quiz", status: "assessed", verified: true }),
     "applications:getForJob": () => ({ _id: "a1", accountId: "demo-worker", jobId: "g-quiz", status: "applied", verified: false }),
@@ -200,9 +202,20 @@ describe("starting an assessment", () => {
     expect(!started.ok && started.message).toMatch(/cannot retake|no longer|cancelled/i);
   });
 
-  it("records the start time so the clock is server-side, not the browser's", async () => {
+  it("hands out the questions without starting the clock", async () => {
+    // Preparing an assessment is not beginning one. The clock used to start
+    // the instant this returned, while Aide was still explaining the rules and
+    // reading every question and option aloud — on a two-minute assessment
+    // that can be most of the time, spent before the worker has heard the
+    // first question, with no countdown they can see to notice.
     await startAssessment("demo-worker", "g-quiz");
-    expect(calls.some((c) => c.name === "jobs:recordAttempt")).toBe(true);
+    expect(calls.some((c) => c.name === "jobs:recordAttempt")).toBe(false);
+    expect(calls.some((c) => c.name === "jobs:beginAttempt")).toBe(false);
+  });
+
+  it("starts the clock only when the worker is ready, and keeps it server-side", async () => {
+    await beginAssessment("demo-worker", "g-quiz");
+    expect(calls.some((c) => c.name === "jobs:beginAttempt")).toBe(true);
   });
 });
 

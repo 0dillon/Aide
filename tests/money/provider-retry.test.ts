@@ -31,10 +31,24 @@ const timeout = () => Object.assign(new Error("The operation was aborted due to 
 let calls: string[] = [];
 const fetchMock = vi.fn();
 
+// How long a call is given is decided by AbortSignal.timeout, and the signal it
+// returns does not carry the number. So record the argument and pair it with
+// the request that follows — attempt() calls the two back to back.
+const realAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
+let lastBudget = -1;
+let budgets: { path: string; ms: number }[] = [];
+const budgetFor = (match: string) => budgets.find((b) => b.path.includes(match))?.ms ?? -1;
+
 beforeEach(async () => {
   vi.resetModules();
   calls = [];
+  budgets = [];
+  lastBudget = -1;
   fetchMock.mockReset();
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+    lastBudget = ms;
+    return realAbortTimeout(ms);
+  });
   vi.stubGlobal("fetch", fetchMock);
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -51,6 +65,7 @@ const respond = (handler: (path: string, n: number) => Response | Promise<Respon
   fetchMock.mockImplementation(async (url: unknown) => {
     const path = route(url);
     calls.push(path);
+    budgets.push({ path, ms: lastBudget });
     const n = (seen.get(path) ?? 0) + 1;
     seen.set(path, n);
     return handler(path, n);
@@ -130,6 +145,48 @@ describe("moving money", () => {
       }),
     ).rejects.toThrow();
     expect(calls.filter((c) => c.includes("disbursements"))).toHaveLength(1);
+  });
+
+  it("gives a transfer far longer to answer than a read gets", async () => {
+    // The other half of the same rule. Not retrying stops AIDE sending the
+    // money twice; this stops the USER being told to. Abandoning the request
+    // at eight seconds made confirmWithdrawal report a failure without writing
+    // a ledger row, so the balance still showed the money and the worker was
+    // invited to withdraw it again — against an endpoint that takes no
+    // idempotency key. A timeout does not mean it failed. It means we do not
+    // know, and the only safe way to find out is to wait for the answer.
+    respond((path) => {
+      if (path === AUTH) return token();
+      if (path.includes("transactions")) return ok({ content: [] });
+      return ok({ reference: "w-1", status: "SUCCESS", amount: 12000 });
+    });
+    const { singleTransfer, getReservedAccountTransactions } = await load();
+
+    await singleTransfer({
+      amount: 12000,
+      reference: "w-1",
+      narration: "payout",
+      destinationAccountNumber: "0123456789",
+      destinationBankCode: "058",
+      destinationAccountName: "Ada Okafor",
+    });
+    await getReservedAccountTransactions("ref-1");
+
+    const transferBudget = budgetFor("disbursements/single");
+    expect(transferBudget).toBeGreaterThan(budgetFor("transactions"));
+    // Long enough to outlast a slow interbank hop, not merely nudged up.
+    expect(transferBudget).toBeGreaterThanOrEqual(30_000);
+  });
+
+  it("does not hand that budget to ordinary reads", async () => {
+    respond((path) => {
+      if (path === AUTH) return token();
+      return ok({ content: [] });
+    });
+    const { getReservedAccountTransactions } = await load();
+    await getReservedAccountTransactions("ref-1");
+    expect(budgetFor("transactions")).toBeLessThanOrEqual(10_000);
+    expect(budgetFor(AUTH)).toBeLessThanOrEqual(10_000);
   });
 });
 

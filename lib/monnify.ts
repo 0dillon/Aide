@@ -13,6 +13,14 @@ let cached: TokenCache | null = null;
 // which spent 13.2s just opening the connection. One budget cannot serve both
 // callers, so there are two.
 const CALL_TIMEOUT_MS = 8000;
+// Money-moving calls get their own, far longer budget, for the same reason
+// singleTransfer is not retried: a timeout there does not mean the transfer
+// failed, it means we do not know. Not retrying stops AIDE sending twice.
+// This stops the USER being told to. Abandoning the request at eight seconds
+// left confirmWithdrawal reporting failure with no ledger row written, so the
+// balance still showed the money and the worker was invited to withdraw it
+// again — and this endpoint takes no idempotency key. Wait for the verdict.
+const TRANSFER_TIMEOUT_MS = 60_000;
 // One retry, because that spread means a slow attempt says almost nothing
 // about the next one. A second try usually lands in well under a second, and a
 // user staring at a dash would rather wait than be told to come back.
@@ -107,8 +115,8 @@ export function spokenProviderError(e: unknown): string {
   return "I could not get your balance from the bank just now. Your money is safe — try again in a moment.";
 }
 
-async function attempt<T>(path: string, init: RequestInit): Promise<T> {
-  const res = await fetch(`${env.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
+async function attempt<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
+  const res = await fetch(`${env.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   const body = (await res.json()) as { requestSuccessful: boolean; responseMessage: string; responseBody: T };
   if (!res.ok || !body.requestSuccessful) {
     // The provider answered. Retrying will get the same answer, and on a
@@ -122,7 +130,7 @@ async function attempt<T>(path: string, init: RequestInit): Promise<T> {
 
 // `retry` defaults to false so a caller has to opt in. Reads are safe to
 // repeat; anything that moves money is not, and must never be retried blind.
-async function call<T>(path: string, init: RequestInit, retry = false): Promise<T> {
+async function call<T>(path: string, init: RequestInit, retry = false, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   // Already known to be down: do not spend the budget finding out again.
   if (breakerOpen()) {
     const down = new ProviderDown();
@@ -133,7 +141,7 @@ async function call<T>(path: string, init: RequestInit, retry = false): Promise<
   let last: unknown;
   for (let i = 0; i < tries; i++) {
     try {
-      const out = await attempt<T>(path, init);
+      const out = await attempt<T>(path, init, timeoutMs);
       consecutive = 0;
       openUntil = 0;
       noteSuccess(path);
@@ -177,7 +185,13 @@ export async function getToken(): Promise<string> {
   return body.accessToken;
 }
 
-async function authed<T>(path: string, method: string, payload?: unknown, retry = false): Promise<T> {
+async function authed<T>(
+  path: string,
+  method: string,
+  payload?: unknown,
+  retry = false,
+  timeoutMs?: number,
+): Promise<T> {
   const token = await getToken();
   return call<T>(
     path,
@@ -187,6 +201,7 @@ async function authed<T>(path: string, method: string, payload?: unknown, retry 
       body: payload ? JSON.stringify(payload) : undefined,
     },
     retry,
+    timeoutMs,
   );
 }
 
@@ -288,22 +303,38 @@ export function singleTransfer(input: {
   destinationBankCode: string;
   destinationAccountName: string;
 }): Promise<TransferResult> {
-  // Deliberately NOT retried. A timeout here means we do not know whether the
-  // transfer went through, and trying again could send the money twice.
-  return authed<TransferResult>("/api/v2/disbursements/single", "POST", {
-    amount: input.amount,
-    reference: input.reference,
-    narration: input.narration,
-    destinationBankCode: input.destinationBankCode,
-    destinationAccountNumber: input.destinationAccountNumber,
-    destinationAccountName: input.destinationAccountName,
-    currency: "NGN",
-    sourceAccountNumber: env.walletAccountNumber,
-  });
+  // Deliberately NOT retried, and given a long budget rather than the eight
+  // seconds a read gets. Both follow from the same fact: a timeout here means
+  // we do not know whether the transfer went through. Not retrying is what
+  // stops Aide sending it twice; waiting for the answer is what stops the user
+  // being told it failed and sending it again themselves.
+  return authed<TransferResult>(
+    "/api/v2/disbursements/single",
+    "POST",
+    {
+      amount: input.amount,
+      reference: input.reference,
+      narration: input.narration,
+      destinationBankCode: input.destinationBankCode,
+      destinationAccountNumber: input.destinationAccountNumber,
+      destinationAccountName: input.destinationAccountName,
+      currency: "NGN",
+      sourceAccountNumber: env.walletAccountNumber,
+    },
+    false,
+    TRANSFER_TIMEOUT_MS,
+  );
 }
 
 export function authorizeTransfer(reference: string, authorizationCode: string): Promise<TransferResult> {
-  return authed<TransferResult>("/api/v2/disbursements/single/validate-otp", "POST", { reference, authorizationCode });
+  // Also moves money — same budget, same reasoning as singleTransfer.
+  return authed<TransferResult>(
+    "/api/v2/disbursements/single/validate-otp",
+    "POST",
+    { reference, authorizationCode },
+    false,
+    TRANSFER_TIMEOUT_MS,
+  );
 }
 
 export function walletBalance(walletId: string): Promise<{ availableBalance: number; ledgerBalance: number }> {

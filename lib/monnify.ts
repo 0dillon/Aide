@@ -64,7 +64,16 @@ function isTransient(e: unknown): boolean {
 // print the error object and its stack, so an unreachable host produced a wall
 // of identical traces every fifteen seconds and buried every other log on the
 // machine. Repeats now collapse into a counter, and recovery says so.
+// Keyed by ENDPOINT, not by full path. The path carries account, wallet and
+// transaction references, so with the query string in the key every reference
+// got its own entry and its own log line — the collapse this exists for never
+// happened for the endpoints that vary. Worse, a key is only ever cleared by a
+// later success at that same URL, which never comes for a one-shot transaction
+// reference, so the map could only grow. A couple of endpoints still carry a
+// reference in the path itself, so the cap below is what actually bounds it.
 const failing = new Map<string, { reason: string; count: number }>();
+const MAX_TRACKED_ROUTES = 100;
+const routeOf = (path: string) => path.split("?")[0];
 // Consecutive transient failures across ALL paths — one provider, one verdict.
 let consecutive = 0;
 
@@ -74,25 +83,42 @@ function reasonOf(e: unknown): string {
 }
 
 function noteFailure(path: string, e: unknown): void {
+  // An answered error is never collapsed. It is the provider's verdict on ONE
+  // request, usually about one user, and counting it as an outage hid it:
+  // twenty withdrawals refused for "Insufficient funds in wallet" share an
+  // endpoint and a message, so the counter printed one line and swallowed
+  // nineteen. An operator reading that concluded a single user was affected.
+  if ((e as { answered?: boolean }).answered) {
+    console.error(`[Monnify] ${path} refused: ${reasonOf(e)}`);
+    return;
+  }
+
+  const route = routeOf(path);
   const reason = reasonOf(e);
-  const prev = failing.get(path);
+  const prev = failing.get(route);
   if (prev?.reason === reason) {
     prev.count += 1;
     // Occasional reminders that it is still down, not one per attempt.
     if (prev.count % 20 === 0) {
-      console.error(`[Monnify] ${path} still unreachable (${reason}) — ${prev.count} consecutive failures`);
+      console.error(`[Monnify] ${route} still unreachable (${reason}) — ${prev.count} consecutive failures`);
     }
     return;
   }
-  failing.set(path, { reason, count: 1 });
-  console.error(`[Monnify] ${path} failed: ${reason}`);
+  // Bookkeeping about a leak must not become one.
+  if (!prev && failing.size >= MAX_TRACKED_ROUTES) {
+    const oldest = failing.keys().next().value;
+    if (oldest) failing.delete(oldest);
+  }
+  failing.set(route, { reason, count: 1 });
+  console.error(`[Monnify] ${route} failed: ${reason}`);
 }
 
 function noteSuccess(path: string): void {
-  const prev = failing.get(path);
+  const route = routeOf(path);
+  const prev = failing.get(route);
   if (!prev) return;
-  failing.delete(path);
-  console.info(`[Monnify] ${path} recovered after ${prev.count} failed attempt(s).`);
+  failing.delete(route);
+  console.info(`[Monnify] ${route} recovered after ${prev.count} failed attempt(s).`);
 }
 
 // What to SAY when the bank rail is unreachable. The raw failures here are

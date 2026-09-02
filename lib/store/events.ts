@@ -77,8 +77,18 @@ export function ensurePolling(): void {
             Number.isNaN(parsed) ? Date.now() : parsed,
           );
         }
-      } catch {
-        /* transient for this wallet — the backoff below decides how soon to retry */
+      } catch (e) {
+        // An answered error is proof the provider is UP — it just said no about
+        // this one wallet. lib/monnify.ts marks those, and without checking the
+        // mark a rejected wallet was indistinguishable from an unreachable
+        // host: a stale or cross-environment accountReference, which is exactly
+        // what a local demo accumulates, made every wallet fail and walked the
+        // interval from 15s to 5 minutes while Monnify was perfectly healthy.
+        // This poller is the only delivery path when no tunnel can reach the
+        // webhook, so that is real money landing and Aide saying nothing about
+        // it for five minutes.
+        if ((e as { answered?: boolean }).answered) reachedProvider = true;
+        /* otherwise transient for this wallet — the backoff below decides how soon to retry */
       }
     }
 

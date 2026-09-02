@@ -78,9 +78,15 @@ export default defineSchema({
     txSeeded: v.boolean(),
   }).index("by_account", ["accountId"]),
 
+  // Money here is integer kobo, in `amountKobo`. `amount` is the pre-migration
+  // naira field: still readable so rows written before the change keep counting
+  // (see koboOf in wallets.ts), and still written alongside so rolling back to
+  // the previous deploy does not read every row as a hundredth of itself. Drop
+  // it once no deployed code reads `amount`.
   withdrawals: defineTable({
     accountId: v.string(),
-    amount: v.number(),
+    amount: v.optional(v.number()),
+    amountKobo: v.optional(v.number()),
     accountName: v.string(),
     status: v.string(),
     at: v.number(),

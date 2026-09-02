@@ -111,7 +111,7 @@ describe("amount guards", () => {
 
   it("counts money already withdrawn against the balance", async () => {
     // 50,000 in, 45,000 already out — only 5,000 is really available.
-    handlers["wallets:withdrawnTotal"] = () => 45_000;
+    handlers["wallets:withdrawnTotal"] = () => 4_500_000; // ₦45,000 in kobo
     handlers["wallets:listBeneficiaries"] = trusted;
     const r = await armWithdrawal(acct, 10_000, { beneficiaryName: "ADA" });
     expect(r.ok).toBe(false);
@@ -292,13 +292,13 @@ describe("balance is derived, never asserted", () => {
   });
 
   it("subtracts what has already been withdrawn", async () => {
-    handlers["wallets:withdrawnTotal"] = () => 20000;
+    handlers["wallets:withdrawnTotal"] = () => 2_000_000; // ₦20,000 in kobo
     bank.transactions.mockResolvedValue({ content: [{ amount: 50000, paymentStatus: "PAID", transactionReference: "A" }] });
     expect((await getBalance(acct)).balance).toBe(30000);
   });
 
   it("never reports a negative balance", async () => {
-    handlers["wallets:withdrawnTotal"] = () => 999999;
+    handlers["wallets:withdrawnTotal"] = () => 99_999_900; // ₦999,999 in kobo
     expect((await getBalance(acct)).balance).toBe(0);
   });
 

@@ -210,10 +210,24 @@ export const saveBeneficiary = mutation({
 
 // --- Withdrawal ledger (audit trail; makes balances honest) ---
 
+// Kobo for a ledger row, whichever era wrote it. Rows written before the kobo
+// migration carry naira in `amount`; reading one of those as kobo would report
+// a hundredth of the real figure, and understating what a worker has already
+// taken out invites them to withdraw money that is not there.
+function koboOf(row: { amountKobo?: number; amount?: number }): number {
+  if (row.amountKobo !== undefined) return row.amountKobo;
+  if (row.amount !== undefined) return Math.round(row.amount * 100);
+  // Neither field means a row we cannot price. Counting it as zero would
+  // silently inflate the available balance, so refuse the whole total instead.
+  throw new Error("Withdrawal row carries no amount in either naira or kobo");
+}
+
 export const recordWithdrawal = mutation({
-  args: { accountId: v.string(), amount: v.number(), accountName: v.string(), status: v.string(), at: v.number() },
+  args: { accountId: v.string(), amountKobo: v.number(), accountName: v.string(), status: v.string(), at: v.number() },
   handler: async (ctx, a) => {
-    await ctx.db.insert("withdrawals", a);
+    // `amount` is written too, in naira, so a rollback to the previous deploy
+    // still reads a correct figure rather than one a hundred times too big.
+    await ctx.db.insert("withdrawals", { ...a, amount: a.amountKobo / 100 });
   },
 });
 
@@ -223,11 +237,13 @@ export const listWithdrawals = query({
     (await ctx.db.query("withdrawals").withIndex("by_account", (q) => q.eq("accountId", accountId)).collect()).sort((a, b) => b.at - a.at),
 });
 
-// Total already withdrawn (excludes FAILED) — the debit side of available balance.
+// Total already withdrawn in KOBO (excludes FAILED) — the debit side of
+// available balance. Integer throughout: summing naira floats drifts, and the
+// drift lands on someone who cannot see the number to challenge it.
 export const withdrawnTotal = query({
   args: { accountId: v.string() },
   handler: async (ctx, { accountId }) => {
     const rows = await ctx.db.query("withdrawals").withIndex("by_account", (q) => q.eq("accountId", accountId)).collect();
-    return rows.filter((r) => r.status !== "FAILED").reduce((s, r) => s + r.amount, 0);
+    return rows.filter((r) => r.status !== "FAILED").reduce((s, r) => s + koboOf(r), 0);
   },
 });

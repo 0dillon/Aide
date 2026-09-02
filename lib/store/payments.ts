@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
 import { type Beneficiary, type Wallet, type WithdrawalRecord } from "./state";
+import { toKobo, toNaira } from "../money";
 
 // Per-account Monnify wallets, now backed by Convex so balances, payout
 // destinations, and armed withdrawals are shared across serverless instances.
@@ -151,9 +152,13 @@ export function provisionWalletInBackground(accountId: string): void {
 // within seconds. Withdrawals invalidate it; a 20s TTL bounds staleness.
 const balanceCache = new Map<string, { value: number; at: number }>();
 
+// `inboundTotal` is naira, as the provider reports it, and the figure returned
+// is naira, as callers still speak it. The subtraction in between is done in
+// whole kobo: withdrawnTotal is kobo, and taking a kobo total off a naira total
+// would be off by a hundred, which no type here would have caught.
 async function availableFrom(accountId: string, inboundTotal: number): Promise<number> {
-  const withdrawn = (await convexClient().query(api.wallets.withdrawnTotal, { accountId })) as number;
-  return Math.max(0, inboundTotal - withdrawn);
+  const withdrawnKobo = (await convexClient().query(api.wallets.withdrawnTotal, { accountId })) as number;
+  return toNaira(Math.max(0, toKobo(inboundTotal) - withdrawnKobo));
 }
 
 export async function cacheWalletBalance(accountId: string, inboundTotal: number): Promise<void> {
@@ -211,7 +216,8 @@ export async function getBalance(accountId: string): Promise<{ balance: number; 
 // --- Withdrawals ---
 
 export async function recordWithdrawal(accountId: string, r: Omit<WithdrawalRecord, "at" | "accountId">): Promise<void> {
-  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amount: r.amount, accountName: r.accountName, status: r.status, at: Date.now() });
+  // r.amount is naira at this boundary; the ledger stores whole kobo.
+  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amountKobo: toKobo(r.amount), accountName: r.accountName, status: r.status, at: Date.now() });
   balanceCache.delete(accountId); // money left — never serve a stale total
 }
 

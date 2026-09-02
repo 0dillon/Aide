@@ -543,9 +543,22 @@ export class VoiceEngine {
   // Where a tap counts toward the run. Text fields are out because a triple
   // click there already means "select this line", and links because the first
   // click has usually navigated away before the third one lands.
+  //
+  // Buttons are out for a sharper reason. Clicking Send three times because a
+  // reply is slow means "send it", not "close the microphone", and answering
+  // that with a mute is close to unrecoverable: startRecognition() refuses to
+  // reopen while muted, so nothing — not finishOrNext, not the visibility
+  // handler, not the restart backoff — brings the mic back until the user
+  // rediscovers the gesture, and there is nothing on screen telling them it
+  // happened. The same went for the skill chips, the assessment controls and
+  // the payments controls.
+  //
+  // Aide's own orb is the exception: it is the biggest target on the page and
+  // the one a hand finds without being told where to look, so it opts back in
+  // with data-aide-orb (app/page.tsx and the MiniAide in app/aide/index.tsx).
   private countsAsTap(e: Event): boolean {
     const el = e.target as HTMLElement | null;
-    return !el?.closest("input, textarea, select, a, [contenteditable='true']");
+    return !el?.closest("input, textarea, select, a, [contenteditable='true'], button:not([data-aide-orb])");
   }
 
   // Hold the mic closed, or hand it back. Announced either way: the whole

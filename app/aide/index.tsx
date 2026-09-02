@@ -381,6 +381,8 @@ function MiniAide() {
       )}
       <button
         onClick={interrupt}
+        // Same opt-in as the main orb — see countsAsTap() in ./voice-engine.
+        data-aide-orb=""
         aria-label={`${status}. Tap to interrupt Aide and speak.`}
         className={`relative grid h-20 w-20 place-items-center rounded-full bg-[var(--accent)] font-bold text-white shadow-xl ${
           speaking ? "aide-speaking" : ""

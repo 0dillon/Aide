@@ -514,7 +514,14 @@ export class VoiceEngine {
     // so it must not count toward a run. Otherwise the three taps someone makes
     // to rouse a dormant Aide complete a hold instead, and they hear that Aide
     // has stopped listening at the exact moment they were asking it to start.
-    if (this.canHear && e.type === "pointerdown" && !this.dormant && this.countsAsTap(e) && this.taps.register(Date.now())) {
+    //
+    // `active` is checked alongside `canHear` because the browser having a
+    // recognizer is not the same as Aide having a microphone. Denied or blocked
+    // permission clears `active` from rec.onerror without detaching this
+    // listener, and offering to close a mic that was never open — then claiming
+    // to reopen one that startRecognition() will refuse to touch — is exactly
+    // the lie the gesture is supposed to be incapable of telling.
+    if (this.canHear && this.active && e.type === "pointerdown" && !this.dormant && this.countsAsTap(e) && this.taps.register(Date.now())) {
       this.toggleMuted();
       return;
     }

@@ -72,6 +72,13 @@ let expectedLen: number | null = null;
 // one serial worker was enough for the last few to time out having never been
 // touched, which killed the worker and took the greeting down with it, leaving
 // the browser to fall back to its robotic voice.
+// Set when the deadline expires, so the drain below knows the front request is
+// the one thing here that has PROVEN it cannot be synthesized. Replaying it
+// put the poison sentence straight back at the head of a fresh serial worker,
+// where it burned a second full deadline with all the healthy work stuck behind
+// it — a minute of dead air instead of thirty seconds.
+let frontTimedOut = false;
+
 function armFrontTimeout() {
   if (frontTimer) clearTimeout(frontTimer);
   frontTimer = null;
@@ -79,11 +86,43 @@ function armFrontTimeout() {
   frontTimer = setTimeout(() => {
     frontTimer = null;
     const proc = worker;
-    if (!proc) return;
+    if (!proc) {
+      // The process this queue was waiting on is already gone and took no
+      // 'exit' with it. Nothing is coming, so settle the work rather than
+      // leaving the promises — and the HTTP responses behind them — hanging.
+      drainAfterWorkerLoss();
+      return;
+    }
     // Genuinely wedged: kill it so the next request gets a fresh process.
+    frontTimedOut = true;
     proc.kill();
     if (worker === proc) worker = null;
   }, REQUEST_TIMEOUT_MS);
+}
+
+// Everything a lost worker leaves behind: a deadline with nothing to enforce it
+// against, and a queue of work nobody is going to finish.
+//
+// A request is only text, so untried work is replayed on a fresh process rather
+// than failed — the alternative is a user hearing Aide drop to the robotic
+// fallback voice partway through a reply, seemingly at random.
+function drainAfterWorkerLoss(): void {
+  if (frontTimer) clearTimeout(frontTimer);
+  frontTimer = null;
+  const pending = queue;
+  queue = [];
+  // The request that burned the deadline does not get another one.
+  const poisoned = frontTimedOut ? pending.shift() : undefined;
+  frontTimedOut = false;
+  poisoned?.reject(new Error("edge_tts timed out synthesizing this sentence"));
+  for (const req of pending) {
+    if (req.attempts + 1 < MAX_ATTEMPTS) {
+      req.attempts += 1;
+      dispatch(req);
+    } else {
+      req.reject(new Error("edge_tts worker exited repeatedly"));
+    }
+  }
 }
 
 function settleFront(err: Error | null, audio?: Buffer) {
@@ -119,30 +158,25 @@ function spawnWorker(): ChildProcessWithoutNullStreams {
 
   proc.stdout.on("data", onWorkerData);
   proc.stderr.on("data", (c) => console.warn("edge_tts worker stderr:", c.toString().trim()));
+  // Writing to a process that died between dispatch and flush raises EPIPE on
+  // the stream. Unhandled, a stream 'error' event takes the whole server down.
+  proc.stdin.on("error", (err) => console.warn("edge_tts worker stdin:", err.message));
+
   proc.on("exit", (code) => {
     console.warn(`edge_tts worker exited (code ${code}) — will respawn on next request`);
     if (worker === proc) worker = null;
-    if (frontTimer) clearTimeout(frontTimer);
-    frontTimer = null;
-    const pending = queue;
-    queue = [];
-    // The framing protocol has no way to cancel a single request, so escaping a
-    // slow synthesis means killing the whole process — which used to reject
-    // every OTHER sentence queued behind it as well. A user hears that as Aide
-    // dropping to the robotic fallback voice partway through a reply, seemingly
-    // at random. A request is only text, so replay it instead of failing it.
-    for (const req of pending) {
-      if (req.attempts + 1 < MAX_ATTEMPTS) {
-        req.attempts += 1;
-        dispatch(req);
-      } else {
-        req.reject(new Error("edge_tts worker exited repeatedly"));
-      }
-    }
+    drainAfterWorkerLoss();
   });
   proc.on("error", (err) => {
     console.warn("edge_tts worker failed to start:", err);
     if (worker === proc) worker = null;
+    // Node emits 'error' with NO 'exit' when the spawn itself fails — a missing
+    // interpreter, say. Without this the queue kept its unsettled promises, and
+    // because dispatch() only arms a deadline when the queue is empty, no timer
+    // was ever armed again: every later request joined a queue that could not
+    // drain, and the browser sat on a fetch that never resolved. Aide went
+    // silent for the life of the process with nothing on screen to say why.
+    drainAfterWorkerLoss();
   });
 
   return proc;

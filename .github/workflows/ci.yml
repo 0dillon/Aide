@@ -28,10 +28,18 @@ env:
   DEEPSEEK_API_KEY: ci-placeholder
   NEXT_PUBLIC_CONVEX_URL: https://ci-placeholder.convex.cloud
 
+# Every job carries its own cap. GitHub's default is 360 minutes, which is not
+# a timeout so much as an absence of one: a hung job leaves the required check
+# reporting neither pass nor fail for six hours and bills the whole time. There
+# is a live way to hang here — app/api/tts/route.ts spawns a Python worker at
+# module load whenever NEXT_RUNTIME is not "edge" and VERCEL is unset, both true
+# under vitest, so an open handle can keep the runner alive past every test
+# having passed. Sized to a few times what each job actually takes.
 jobs:
   typecheck:
     name: Types
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,6 +52,7 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,6 +68,7 @@ jobs:
   build:
     name: Production build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -71,6 +81,7 @@ jobs:
   speech:
     name: Speech worker
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -91,6 +102,7 @@ jobs:
   secrets:
     name: No secrets committed
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Refuse tracked env files and local Convex state

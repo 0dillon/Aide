@@ -22,7 +22,7 @@ const setup = async () => {
 const arm = (t: Awaited<ReturnType<typeof setup>>, over: Record<string, unknown> = {}) =>
   t.mutation(api.wallets.armPending, {
     accountId: "u-worker",
-    amount: 5000,
+    amountKobo: 500_000,
     phrase: "mango",
     mode: "word" as const,
     destAccount: "0123456789",
@@ -47,7 +47,7 @@ describe("withdrawal confirmation — the double-spend gate", () => {
     await arm(t);
     const r = await consume(t, "mango");
     expect(r.ok).toBe(true);
-    expect(r.ok && r.amount).toBe(5000);
+    expect(r.ok && r.amountKobo).toBe(500_000);
     expect(r.ok && r.payoutAccount).toBe("0123456789");
   });
 

@@ -397,7 +397,9 @@ export async function armWithdrawal(accountId: string, amount: number, dest?: Wi
   const phrase = makeConfirmPhrase();
   await convexClient().mutation(api.wallets.armPending, {
     accountId,
-    amount,
+    // `amount` is naira here — it came from a spoken figure or a form. What
+    // gets armed, and later transferred, is whole kobo.
+    amountKobo: toKobo(amount),
     phrase,
     mode,
     destAccount: resolved.account,
@@ -443,7 +445,9 @@ export async function verifyWithdrawal(accountId: string, spokenPhrase: string):
   }
   return {
     ok: true,
-    amount: r.amount,
+    // Back to naira for the caller, which hands it to the provider and says it
+    // out loud. The stored figure was kobo, so this round-trip is exact.
+    amount: toNaira(r.amountKobo),
     account: r.payoutAccount!,
     bankCode: r.payoutBankCode!,
     accountName: r.payoutAccountName!,

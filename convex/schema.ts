@@ -61,7 +61,12 @@ export default defineSchema({
     securityPhraseHash: v.optional(v.string()),
     pendingWithdrawal: v.optional(
       v.object({
-        amount: v.number(),
+        // Kobo in `amountKobo`. `amount` is the pre-migration naira field, kept
+        // readable and still written: a pending armed minutes before a deploy
+        // is confirmed after it, and that confirmation must move the amount the
+        // worker actually agreed to — in whichever era either half ran.
+        amount: v.optional(v.number()),
+        amountKobo: v.optional(v.number()),
         phrase: v.string(),
         // "word": match the random word in `phrase` (employers).
         // "passphrase": match the wallet's securityPhraseHash (workers).

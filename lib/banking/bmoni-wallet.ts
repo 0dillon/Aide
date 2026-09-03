@@ -178,13 +178,19 @@ export async function activateNigeriaRail(args: {
   smartWalletId: string;
   walletAddress: string;
   bvn: string;
+  // The virtual account to route deposits into. It only exists once the
+  // Nigerian anchor rail has finished onboarding, which is asynchronous — so
+  // the caller supplies it rather than this function inventing one. Pointing
+  // deposits at a guessed account sends a worker's wages somewhere they cannot
+  // be recovered from, and nothing would say so out loud.
+  bankAccountId: string;
 }): Promise<void> {
   await startNigeriaOnboarding({
     userId: args.bmoniUserId,
     bvn: args.bvn,
     ngnWalletAddress: args.walletAddress,
   });
-  await pointDepositsAtWallet(args.bmoniUserId, args.smartWalletId);
+  await pointDepositsAtWallet(args.bmoniUserId, args.smartWalletId, args.bankAccountId);
 }
 
 // ---- Paying out -------------------------------------------------------------

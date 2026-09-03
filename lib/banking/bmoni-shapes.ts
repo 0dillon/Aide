@@ -1,0 +1,117 @@
+import { toKobo } from "../money";
+
+// The seam between BMONI's JSON and anything Aide is willing to say out loud.
+//
+// Every shape here was captured from the live sandbox rather than read off the
+// documentation, because three of them did not match the documented client
+// types — and a field-name mismatch on this API is silent. It is not a 400 and
+// not a type error; the property is simply `undefined`, gets persisted, and
+// surfaces much later as a 404 on a path containing the word "undefined".
+//
+// So these parsers throw. None of them defaults, none of them coerces, none of
+// them returns a zero it did not read. A parser that guessed would produce a
+// confident wrong number, and the person it is read aloud to has no screen to
+// check it against.
+
+type Json = Record<string, unknown>;
+
+function obj(v: unknown): Json {
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    throw new Error(`BMONI returned ${Array.isArray(v) ? "an array" : typeof v} where an object was expected`);
+  }
+  return v as Json;
+}
+
+function str(v: unknown, field: string): string {
+  if (typeof v !== "string" || !v.trim()) throw new Error(`BMONI response is missing ${field}`);
+  return v;
+}
+
+// ---- POST /v1/users ---------------------------------------------------------
+
+// The user comes back wrapped, and carries TWO uuids: `id` (the partner-side
+// record) and `bmoniUserId`. Every other endpoint paths on `bmoniUserId`;
+// `id` gives "User not found". They are indistinguishable by shape, so this
+// picks by name and never by position.
+export function parseCreatedUser(body: unknown): { bmoniUserId: string } {
+  const user = obj(obj(body).user);
+  return { bmoniUserId: str(user.bmoniUserId, "user.bmoniUserId") };
+}
+
+// ---- POST …/smart-wallets/create-managed ------------------------------------
+
+// Returns `id` and `walletAddress` — not `smartWalletId` and `address`.
+// Also: a wallet requested as CNGN comes back with currency NGN.
+export function parseCreatedWallet(body: unknown): { smartWalletId: string; address: string; currency: string } {
+  const w = obj(body);
+  return {
+    smartWalletId: str(w.id, "id"),
+    address: str(w.walletAddress, "walletAddress"),
+    currency: str(w.currency, "currency"),
+  };
+}
+
+// ---- GET …/smart-wallets/account/balances -----------------------------------
+
+// `balance` is a decimal STRING, and each entry carries its own `error` inside
+// an HTTP 200: BMONI can answer successfully while admitting it could not
+// price that particular wallet.
+export function parseNgnBalanceKobo(body: unknown): number {
+  const list = obj(body).balances;
+  if (!Array.isArray(list)) throw new Error("BMONI balances response has no balances array");
+
+  const ngn = list.map(obj).find((b) => b.currency === "NGN");
+  if (!ngn) {
+    // Not the same fact as "empty". Wallets here can be USD, and a user with
+    // no naira wallet has an unknown naira balance, not a zero one.
+    const seen = list.map((b) => obj(b).currency).join(", ") || "none";
+    throw new Error(`No NGN smart wallet in BMONI balances (currencies present: ${seen})`);
+  }
+  if (ngn.error) throw new Error(`BMONI could not price the NGN wallet: ${String(ngn.error)}`);
+
+  const raw = str(ngn.balance, "balances[].balance");
+  const naira = Number(raw);
+  if (!Number.isFinite(naira) || naira < 0) throw new Error(`BMONI reported an unusable NGN balance: ${raw}`);
+  return toKobo(naira);
+}
+
+// ---- GET …/bank-accounts/deposit-accounts/NGN -------------------------------
+
+// Bkey's own house account, returned to users who have no virtual account of
+// their own yet. It is a real, payable NUBAN, which is exactly what makes it
+// dangerous: nothing about the response says "this is not yours".
+const POOLED_ID = /^pooled-/i;
+const POOLED_NAME = /bkey/i;
+
+export function parseNgnDepositAccount(body: unknown): { accountNumber: string; bankName: string } {
+  const list = obj(body).accounts;
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error("BMONI returned no naira deposit account for this user");
+  }
+  const a = obj(list[0]);
+  const id = typeof a.id === "string" ? a.id : "";
+  const name = typeof a.accountName === "string" ? a.accountName : "";
+
+  if (POOLED_ID.test(id) || POOLED_NAME.test(name)) {
+    // Refusing here is the whole point. Handing this back would have Aide read
+    // a working account number aloud as the worker's own; an employer would
+    // pay into a shared pool with no reference tying it to anyone, and the
+    // money would be genuinely unrecoverable by this app.
+    throw new Error(
+      `BMONI returned its pooled house account (${name || id}), not this worker's own. ` +
+        `A per-user virtual account has not been provisioned yet — it requires completed Nigerian onboarding.`,
+    );
+  }
+  return { accountNumber: str(a.accountNumber, "accounts[].accountNumber"), bankName: str(a.bankName, "accounts[].bankName") };
+}
+
+// ---- GET …/bank-accounts/nigerian-banks -------------------------------------
+
+// Wrapped in `banks`, with bankName/bankCode. The codes are NIBSS institution
+// codes (Wema 000017), NOT the 3-digit NIP codes the payments page and Monnify
+// use (Wema 035). The two lists are not interchangeable.
+export function parseBanks(body: unknown): Array<{ name: string; code: string }> {
+  const list = obj(body).banks;
+  if (!Array.isArray(list)) throw new Error("BMONI nigerian-banks response has no banks array");
+  return list.map(obj).map((b) => ({ name: str(b.bankName, "banks[].bankName"), code: str(b.bankCode, "banks[].bankCode") }));
+}

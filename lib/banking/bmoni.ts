@@ -1,5 +1,6 @@
 import { bmoniMove, bmoniRead, BmoniError } from "./bmoni-client";
 import { koboToDecimalString } from "./amounts";
+import { parseBanks, parseCreatedUser, parseCreatedWallet, parseNgnBalanceKobo, parseNgnDepositAccount } from "./bmoni-shapes";
 
 // The BMONI Embedded operations Aide uses, in lifecycle order:
 //
@@ -13,7 +14,7 @@ import { koboToDecimalString } from "./amounts";
 // timeout, no retry. Everything else is a read.
 
 export type BmoniUser = { bmoniUserId: string };
-export type SmartWallet = { smartWalletId: string; address: string };
+export type SmartWallet = { smartWalletId: string; address: string; currency: string };
 export type OwnerProofChallenge = { challengeId: string; message: string };
 export type SignPayload = { hashToSign: string; deadline?: number };
 export type Proposal = { proposalId: string; status: string };
@@ -29,7 +30,7 @@ export type NewUser = { firstName: string; lastName: string; email: string; phon
 // hold it. The caller is responsible for that; this throws with the conflict
 // flagged so it can look in its own store rather than creating a second user.
 export async function createBmoniUser(u: NewUser): Promise<BmoniUser> {
-  return await bmoniRead<BmoniUser>({ path: "/v1/users", method: "POST", body: u });
+  return parseCreatedUser(await bmoniRead({ path: "/v1/users", method: "POST", body: u }));
 }
 
 // ---- 2. Smart wallet --------------------------------------------------------
@@ -57,7 +58,8 @@ export async function createSmartWallet(args: {
   ownerProofSignature: string;
   currency?: string;
 }): Promise<SmartWallet> {
-  return await bmoniMove<SmartWallet>({
+  return parseCreatedWallet(
+    await bmoniMove({
     path: `/v1/users/${args.userId}/smart-wallets/create-managed`,
     method: "POST",
     body: {
@@ -66,12 +68,19 @@ export async function createSmartWallet(args: {
       ownerProofChallengeId: args.ownerProofChallengeId,
       ownerProofSignature: args.ownerProofSignature,
     },
-  });
+    }),
+  );
 }
 
 // The read-before-retry that makes a failed wallet create safe to recover from.
 export async function listBalances(userId: string): Promise<unknown> {
   return await bmoniRead({ path: `/v1/users/${userId}/smart-wallets/account/balances` });
+}
+
+// The naira figure, in whole kobo. Throws rather than reporting a zero it did
+// not read — see lib/banking/bmoni-shapes.ts.
+export async function getNgnBalanceKobo(userId: string): Promise<number> {
+  return parseNgnBalanceKobo(await listBalances(userId));
 }
 
 // ---- 3. KYC / rail ----------------------------------------------------------
@@ -92,28 +101,58 @@ export async function startNigeriaOnboarding(args: {
   });
 }
 
-export async function onboardingStatus(userId: string): Promise<{ status?: string }> {
+// There is no single `status`. The live response is one field per rail —
+// anchorStatus, bridgeStatus, moneriumStatus, paytrieStatus, etherfuseStatus —
+// each independently "not_started" or beyond. Nigerian onboarding is the
+// anchor rail; the others belong to regions Aide does not use.
+export type OnboardingStatus = {
+  anchorStatus?: string;
+  bridgeStatus?: string;
+  moneriumStatus?: string;
+  paytrieStatus?: string;
+  etherfuseStatus?: string;
+};
+
+export async function onboardingStatus(userId: string): Promise<OnboardingStatus> {
   return await bmoniRead({ path: `/v1/users/${userId}/onboarding/status` });
 }
 
 // ---- 4. Deposits (money in) -------------------------------------------------
 
-export async function pointDepositsAtWallet(userId: string, smartWalletId: string): Promise<unknown> {
+// VERIFIED against the sandbox: this requires a `bankAccountId` UUID in the
+// body. Calling it with none answers 400 ["bankAccountId must be a UUID"].
+//
+// Which id, and where it comes from, is still unknown. Before onboarding
+// completes the only account BMONI lists is the pooled house one, whose id is
+// the literal string "pooled-vba-1" — not a UUID, so it cannot be the answer.
+// The per-user virtual account that would have a UUID does not exist until the
+// Nigerian anchor rail is onboarded, which needs one of the two sandbox BVN
+// personas. So this is left un-guessed on purpose: sending an arbitrary id
+// here would point a worker's incoming wages at somebody else's account.
+export async function pointDepositsAtWallet(
+  userId: string,
+  smartWalletId: string,
+  bankAccountId: string,
+): Promise<unknown> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bankAccountId)) {
+    throw new Error(`onramp/vba/nigeria needs a bankAccountId UUID, got ${JSON.stringify(bankAccountId)}`);
+  }
   return await bmoniRead({
     path: `/v1/users/${userId}/smart-wallets/${smartWalletId}/onramp/vba/nigeria`,
     method: "POST",
+    body: { bankAccountId },
   });
 }
 
 // The account number a worker actually gives out to be paid into.
-export async function getNgnDepositAccount(userId: string): Promise<unknown> {
-  return await bmoniRead({ path: `/v1/users/${userId}/bank-accounts/deposit-accounts/NGN` });
+export async function getNgnDepositAccount(userId: string): Promise<{ accountNumber: string; bankName: string }> {
+  return parseNgnDepositAccount(await bmoniRead({ path: `/v1/users/${userId}/bank-accounts/deposit-accounts/NGN` }));
 }
 
 // ---- 5. Withdrawal destinations --------------------------------------------
 
 export async function listNigerianBanks(userId: string): Promise<Array<{ name: string; code: string }>> {
-  return await bmoniRead({ path: `/v1/users/${userId}/bank-accounts/nigerian-banks` });
+  return parseBanks(await bmoniRead({ path: `/v1/users/${userId}/bank-accounts/nigerian-banks` }));
 }
 
 // Name enquiry. A 404 means no account matches — surface it and let the user

@@ -196,6 +196,111 @@ export const consumePending = mutation({
   },
 });
 
+// --- BMONI Embedded provisioning ---
+
+// Written the moment BMONI returns a user, BEFORE the wallet is created.
+//
+// BMONI guards create-user with a uniqueness check and answers a repeat with
+// 409, but it publishes no endpoint to ask which user collided. So this id is
+// unrecoverable if we lose it: we could neither use that user nor create
+// another with the same phone. Persisting it first is what makes the rest of
+// provisioning safe to resume after a crash.
+export const setBmoniUser = mutation({
+  args: { accountId: v.string(), accountReference: v.string(), bmoniUserId: v.string() },
+  handler: async (ctx, a) => {
+    const w = await walletDoc(ctx, a.accountId);
+    if (w) await ctx.db.patch(w._id, { bmoniUserId: a.bmoniUserId });
+    else
+      await ctx.db.insert("wallets", {
+        accountId: a.accountId,
+        accountReference: a.accountReference,
+        status: "unprovisioned",
+        knownTxRefs: [],
+        txSeeded: false,
+        bmoniUserId: a.bmoniUserId,
+      });
+  },
+});
+
+// The sealed key is stored with the address it belongs to, in one write. They
+// are useless apart: a key whose address BMONI never registered signs
+// proposals that are accepted and never execute.
+export const setBmoniOwnerKey = mutation({
+  args: { accountId: v.string(), ownerAddress: v.string(), sealedOwnerKey: v.string() },
+  handler: async (ctx, a) => {
+    const w = await walletDoc(ctx, a.accountId);
+    if (!w) throw new Error("Cannot store a BMONI owner key for an account with no wallet row");
+    // Rotating a key after wallet creation would strand the wallet: BMONI's
+    // signer snapshot still holds the original address, so the new key's
+    // signatures would be recorded and never executed.
+    if (w.bmoniOwnerAddress && w.bmoniOwnerAddress !== a.ownerAddress && w.bmoniSmartWalletId) {
+      throw new Error("Refusing to replace the owner key of a wallet BMONI has already registered");
+    }
+    await ctx.db.patch(w._id, { bmoniOwnerAddress: a.ownerAddress, bmoniSealedOwnerKey: a.sealedOwnerKey });
+  },
+});
+
+export const setBmoniWallet = mutation({
+  args: { accountId: v.string(), smartWalletId: v.string(), walletAddress: v.string() },
+  handler: async (ctx, a) => {
+    const w = await walletDoc(ctx, a.accountId);
+    if (!w) throw new Error("Cannot record a BMONI smart wallet for an account with no wallet row");
+    // Wallet creation has no uniqueness guard at BMONI, so a second one can
+    // genuinely exist. Refusing here keeps us pointed at the first, which is
+    // the one whose address deposits were routed to.
+    if (w.bmoniSmartWalletId && w.bmoniSmartWalletId !== a.smartWalletId) {
+      throw new Error(`Account already has BMONI smart wallet ${w.bmoniSmartWalletId}; refusing to overwrite`);
+    }
+    await ctx.db.patch(w._id, { bmoniSmartWalletId: a.smartWalletId, bmoniWalletAddress: a.walletAddress });
+  },
+});
+
+// Remember a registered withdrawal destination so a repeat withdrawal to the
+// same account skips re-registering it.
+export const rememberBmoniBankAccount = mutation({
+  args: { accountId: v.string(), key: v.string(), bankAccountId: v.string() },
+  handler: async (ctx, a) => {
+    const w = await walletDoc(ctx, a.accountId);
+    if (!w) return;
+    const rows = w.bmoniBankAccountIds ?? [];
+    if (rows.some((r) => r.key === a.key)) return;
+    await ctx.db.patch(w._id, { bmoniBankAccountIds: [...rows, { key: a.key, id: a.bankAccountId }] });
+  },
+});
+
+// Record a proposal the instant BMONI returns one, before it is approved or
+// signed. Atomic claim: if another in-flight proposal is already recorded, this
+// refuses rather than overwriting it. Overwriting would lose the only handle we
+// have on a real payout sitting at BMONI, and the next attempt would create a
+// second one for the same wages.
+export const claimBmoniProposal = mutation({
+  args: { accountId: v.string(), proposalId: v.string(), amountKobo: v.number(), at: v.number() },
+  handler: async (ctx, a) => {
+    const w = await walletDoc(ctx, a.accountId);
+    if (!w) throw new Error("Cannot record a BMONI proposal for an account with no wallet row");
+    const existing = w.bmoniPendingProposal;
+    if (existing && existing.proposalId !== a.proposalId) {
+      return { ok: false as const, inFlight: existing.proposalId };
+    }
+    await ctx.db.patch(w._id, {
+      bmoniPendingProposal: { proposalId: a.proposalId, amountKobo: a.amountKobo, createdAt: a.at },
+    });
+    return { ok: true as const };
+  },
+});
+
+// Cleared only once the proposal reached a terminal status. An unknown status
+// deliberately does NOT clear it — leaving it in flight blocks a second payout
+// until someone establishes what happened to the first.
+export const clearBmoniProposal = mutation({
+  args: { accountId: v.string(), proposalId: v.string() },
+  handler: async (ctx, a) => {
+    const w = await walletDoc(ctx, a.accountId);
+    if (!w || w.bmoniPendingProposal?.proposalId !== a.proposalId) return;
+    await ctx.db.patch(w._id, { bmoniPendingProposal: undefined });
+  },
+});
+
 // --- Beneficiaries: saved withdrawal destinations ---
 
 export const listBeneficiaries = query({

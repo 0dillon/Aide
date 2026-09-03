@@ -39,6 +39,13 @@ export default defineSchema({
     // Optional so accounts written before this field existed still validate.
     preferences: v.optional(v.array(v.string())),
     passwordHash: v.optional(v.string()), // never leaves the server
+    // BMONI needs a first/last name split and a phone number, neither of which
+    // Aide collected — `name` is one free-text string and phone was never
+    // asked for. Optional so every existing account still validates; the BMONI
+    // provisioning path refuses rather than inventing a split it cannot know.
+    firstName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
+    phoneNumber: v.optional(v.string()), // E.164, e.g. +2348000000000
   })
     .index("by_key", ["key"])
     .index("by_email", ["email"]),
@@ -81,6 +88,42 @@ export default defineSchema({
     // knownTxRefs is a Set in memory; Convex stores it as an array we treat as a set.
     knownTxRefs: v.array(v.string()),
     txSeeded: v.boolean(),
+
+    // ---- BMONI Embedded ----
+    // All optional: Monnify remains the default provider and a wallet that has
+    // never touched BMONI carries none of these.
+    //
+    // bmoniUserId is the one that must survive a crash. BMONI guards
+    // create-user with a uniqueness check and returns 409 on a repeat, but
+    // publishes no endpoint to ask WHICH user collided — so if we lose this
+    // value we can neither use the user nor recreate them. It is written
+    // before anything else depends on it for that reason.
+    bmoniUserId: v.optional(v.string()),
+    bmoniSmartWalletId: v.optional(v.string()),
+    bmoniWalletAddress: v.optional(v.string()),
+    // The owner key's public address, registered with BMONI at wallet
+    // creation. The proposal signer must recover to exactly this; if it does
+    // not, BMONI records the signature and silently never executes it.
+    bmoniOwnerAddress: v.optional(v.string()),
+    // The owner private key, AES-256-GCM sealed (see lib/banking/keys.ts).
+    // Never returned to the client, never logged. Whoever holds the plaintext
+    // can sign a transfer out of this wallet.
+    bmoniSealedOwnerKey: v.optional(v.string()),
+    // Registered Nigerian withdrawal destinations, BMONI's bankAccountId keyed
+    // by "accountNumber:bankCode" so a repeat withdrawal skips re-registering.
+    bmoniBankAccountIds: v.optional(v.array(v.object({ key: v.string(), id: v.string() }))),
+    // An offramp or transfer that has been CREATED at BMONI but not yet seen
+    // through to a terminal status.
+    //
+    // This is the double-payment guard. The payout flow is several calls —
+    // create, approve, fetch payload, sign — and a failure anywhere after the
+    // first one leaves a real proposal sitting at BMONI. Starting over would
+    // create a SECOND payout for the same wages. So the id is recorded the
+    // moment it exists, and no new payout may start while one is in flight:
+    // the flow resumes from here instead.
+    bmoniPendingProposal: v.optional(
+      v.object({ proposalId: v.string(), amountKobo: v.number(), createdAt: v.number() }),
+    ),
   }).index("by_account", ["accountId"]),
 
   // Money here is integer kobo, in `amountKobo`. `amount` is the pre-migration

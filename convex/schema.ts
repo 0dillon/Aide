@@ -61,7 +61,12 @@ export default defineSchema({
     securityPhraseHash: v.optional(v.string()),
     pendingWithdrawal: v.optional(
       v.object({
-        amount: v.number(),
+        // Kobo in `amountKobo`. `amount` is the pre-migration naira field, kept
+        // readable and still written: a pending armed minutes before a deploy
+        // is confirmed after it, and that confirmation must move the amount the
+        // worker actually agreed to — in whichever era either half ran.
+        amount: v.optional(v.number()),
+        amountKobo: v.optional(v.number()),
         phrase: v.string(),
         // "word": match the random word in `phrase` (employers).
         // "passphrase": match the wallet's securityPhraseHash (workers).
@@ -78,9 +83,15 @@ export default defineSchema({
     txSeeded: v.boolean(),
   }).index("by_account", ["accountId"]),
 
+  // Money here is integer kobo, in `amountKobo`. `amount` is the pre-migration
+  // naira field: still readable so rows written before the change keep counting
+  // (see koboOf in wallets.ts), and still written alongside so rolling back to
+  // the previous deploy does not read every row as a hundredth of itself. Drop
+  // it once no deployed code reads `amount`.
   withdrawals: defineTable({
     accountId: v.string(),
-    amount: v.number(),
+    amount: v.optional(v.number()),
+    amountKobo: v.optional(v.number()),
     accountName: v.string(),
     status: v.string(),
     at: v.number(),

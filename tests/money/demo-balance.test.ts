@@ -50,7 +50,7 @@ vi.mock("../../lib/monnify", () => ({
 let getBalance: typeof import("../../lib/store/payments").getBalance;
 let calls: ConvexCall[];
 let handlers: Handlers;
-let withdrawn: number;
+let withdrawn: number; // KOBO — this stands in for the wallets:withdrawnTotal query
 
 const outage = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
 
@@ -100,7 +100,7 @@ describe("with the stand-in switched on", () => {
   it("subtracts withdrawals, so the demo cannot contradict itself", async () => {
     // Withdraw two thousand and the balance has to move. Otherwise the first
     // withdrawal in a demo makes the number visibly wrong.
-    withdrawn = 2000;
+    withdrawn = 200_000; // ₦2,000 in kobo
     bank.transactions.mockRejectedValue(outage());
     expect((await getBalance("u-worker")).balance).toBe(10000);
   });

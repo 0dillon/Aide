@@ -12,6 +12,20 @@ async function walletDoc(ctx: QueryCtx | MutationCtx, accountId: string): Promis
   return await ctx.db.query("wallets").withIndex("by_account", (q) => q.eq("accountId", accountId)).first();
 }
 
+// Kobo for any stored amount, whichever era wrote it — ledger rows and armed
+// withdrawals alike. Anything written before the kobo migration carries naira
+// in `amount`; reading one of those as kobo gives a hundredth of the real
+// figure. On the ledger that understates what a worker has already taken out
+// and invites them to withdraw money that is not there; on a pending it sends
+// a hundredth of what they agreed to.
+function koboOf(row: { amountKobo?: number; amount?: number }): number {
+  if (row.amountKobo !== undefined) return row.amountKobo;
+  if (row.amount !== undefined) return Math.round(row.amount * 100);
+  // Neither field means an amount we cannot price. Guessing zero would inflate
+  // the available balance; refuse instead, and let the caller say so out loud.
+  throw new Error("Stored amount carries no figure in either naira or kobo");
+}
+
 // Loose match: the user may say "mango" or "the word is mango". ASR is
 // imperfect, so we check the confirm word appears among the spoken tokens.
 function phraseMatches(spoken: string, phrase: string): boolean {
@@ -110,7 +124,7 @@ export const setSecurityPhrase = mutation({
 export const armPending = mutation({
   args: {
     accountId: v.string(),
-    amount: v.number(),
+    amountKobo: v.number(),
     phrase: v.string(),
     mode: v.union(v.literal("word"), v.literal("passphrase")),
     destAccount: v.string(),
@@ -123,7 +137,10 @@ export const armPending = mutation({
     if (w)
       await ctx.db.patch(w._id, {
         pendingWithdrawal: {
-          amount: a.amount,
+          amountKobo: a.amountKobo,
+          // Naira written alongside, so a rollback to the previous deploy
+          // confirms this pending for the right figure rather than 100× it.
+          amount: a.amountKobo / 100,
           phrase: a.phrase,
           mode: a.mode,
           destAccount: a.destAccount,
@@ -169,7 +186,7 @@ export const consumePending = mutation({
     await ctx.db.patch(w._id, { pendingWithdrawal: undefined });
     return {
       ok: true as const,
-      amount: p.amount,
+      amountKobo: koboOf(p),
       // Per-withdrawal destination; legacy payout fields as fallback for any
       // pending armed before destinations existed.
       payoutAccount: p.destAccount ?? w.payoutAccount,
@@ -211,9 +228,11 @@ export const saveBeneficiary = mutation({
 // --- Withdrawal ledger (audit trail; makes balances honest) ---
 
 export const recordWithdrawal = mutation({
-  args: { accountId: v.string(), amount: v.number(), accountName: v.string(), status: v.string(), at: v.number() },
+  args: { accountId: v.string(), amountKobo: v.number(), accountName: v.string(), status: v.string(), at: v.number() },
   handler: async (ctx, a) => {
-    await ctx.db.insert("withdrawals", a);
+    // `amount` is written too, in naira, so a rollback to the previous deploy
+    // still reads a correct figure rather than one a hundred times too big.
+    await ctx.db.insert("withdrawals", { ...a, amount: a.amountKobo / 100 });
   },
 });
 
@@ -223,11 +242,13 @@ export const listWithdrawals = query({
     (await ctx.db.query("withdrawals").withIndex("by_account", (q) => q.eq("accountId", accountId)).collect()).sort((a, b) => b.at - a.at),
 });
 
-// Total already withdrawn (excludes FAILED) — the debit side of available balance.
+// Total already withdrawn in KOBO (excludes FAILED) — the debit side of
+// available balance. Integer throughout: summing naira floats drifts, and the
+// drift lands on someone who cannot see the number to challenge it.
 export const withdrawnTotal = query({
   args: { accountId: v.string() },
   handler: async (ctx, { accountId }) => {
     const rows = await ctx.db.query("withdrawals").withIndex("by_account", (q) => q.eq("accountId", accountId)).collect();
-    return rows.filter((r) => r.status !== "FAILED").reduce((s, r) => s + r.amount, 0);
+    return rows.filter((r) => r.status !== "FAILED").reduce((s, r) => s + koboOf(r), 0);
   },
 });

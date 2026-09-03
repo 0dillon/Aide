@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
 import { type Beneficiary, type Wallet, type WithdrawalRecord } from "./state";
+import { toKobo, toNaira } from "../money";
 
 // Per-account Monnify wallets, now backed by Convex so balances, payout
 // destinations, and armed withdrawals are shared across serverless instances.
@@ -52,10 +53,31 @@ type WalletDoc = {
   payoutAccountName?: string;
   payoutSetAt?: number;
   securityPhraseHash?: string;
-  pendingWithdrawal?: Wallet["pendingWithdrawal"];
+  // As STORED: a pending armed before the kobo migration has only `amount`, one
+  // armed after has both. Deliberately looser than Wallet["pendingWithdrawal"],
+  // which promises both — normalizePending is what makes that promise true.
+  pendingWithdrawal?: Omit<NonNullable<Wallet["pendingWithdrawal"]>, "amount" | "amountKobo"> & {
+    amount?: number;
+    amountKobo?: number;
+  };
   knownTxRefs?: string[];
   txSeeded?: boolean;
 };
+
+// One honest naira figure and one kobo figure, whichever era wrote the row.
+// The greeting reads the naira aloud; if it were undefined Aide would say "a
+// withdrawal of undefined naira waiting", and the person listening has no
+// screen to catch it on.
+function normalizePending(p: WalletDoc["pendingWithdrawal"]): Wallet["pendingWithdrawal"] {
+  if (!p) return undefined;
+  const amountKobo = p.amountKobo ?? (p.amount !== undefined ? Math.round(p.amount * 100) : undefined);
+  if (amountKobo === undefined) {
+    // An armed withdrawal we cannot price. Saying nothing is safe; inventing a
+    // figure, or speaking "undefined", is not.
+    throw new Error("Armed withdrawal carries no amount in either naira or kobo");
+  }
+  return { ...p, amountKobo, amount: toNaira(amountKobo) };
+}
 
 function toWallet(d: WalletDoc): Wallet {
   return {
@@ -70,7 +92,7 @@ function toWallet(d: WalletDoc): Wallet {
     payoutAccountName: d.payoutAccountName,
     payoutSetAt: d.payoutSetAt,
     hasSecurityPhrase: !!d.securityPhraseHash,
-    pendingWithdrawal: d.pendingWithdrawal,
+    pendingWithdrawal: normalizePending(d.pendingWithdrawal),
     knownTxRefs: new Set(d.knownTxRefs ?? []),
     txSeeded: d.txSeeded ?? false,
   };
@@ -151,9 +173,13 @@ export function provisionWalletInBackground(accountId: string): void {
 // within seconds. Withdrawals invalidate it; a 20s TTL bounds staleness.
 const balanceCache = new Map<string, { value: number; at: number }>();
 
+// `inboundTotal` is naira, as the provider reports it, and the figure returned
+// is naira, as callers still speak it. The subtraction in between is done in
+// whole kobo: withdrawnTotal is kobo, and taking a kobo total off a naira total
+// would be off by a hundred, which no type here would have caught.
 async function availableFrom(accountId: string, inboundTotal: number): Promise<number> {
-  const withdrawn = (await convexClient().query(api.wallets.withdrawnTotal, { accountId })) as number;
-  return Math.max(0, inboundTotal - withdrawn);
+  const withdrawnKobo = (await convexClient().query(api.wallets.withdrawnTotal, { accountId })) as number;
+  return toNaira(Math.max(0, toKobo(inboundTotal) - withdrawnKobo));
 }
 
 export async function cacheWalletBalance(accountId: string, inboundTotal: number): Promise<void> {
@@ -211,7 +237,8 @@ export async function getBalance(accountId: string): Promise<{ balance: number; 
 // --- Withdrawals ---
 
 export async function recordWithdrawal(accountId: string, r: Omit<WithdrawalRecord, "at" | "accountId">): Promise<void> {
-  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amount: r.amount, accountName: r.accountName, status: r.status, at: Date.now() });
+  // r.amount is naira at this boundary; the ledger stores whole kobo.
+  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amountKobo: toKobo(r.amount), accountName: r.accountName, status: r.status, at: Date.now() });
   balanceCache.delete(accountId); // money left — never serve a stale total
 }
 
@@ -391,7 +418,9 @@ export async function armWithdrawal(accountId: string, amount: number, dest?: Wi
   const phrase = makeConfirmPhrase();
   await convexClient().mutation(api.wallets.armPending, {
     accountId,
-    amount,
+    // `amount` is naira here — it came from a spoken figure or a form. What
+    // gets armed, and later transferred, is whole kobo.
+    amountKobo: toKobo(amount),
     phrase,
     mode,
     destAccount: resolved.account,
@@ -437,7 +466,9 @@ export async function verifyWithdrawal(accountId: string, spokenPhrase: string):
   }
   return {
     ok: true,
-    amount: r.amount,
+    // Back to naira for the caller, which hands it to the provider and says it
+    // out loud. The stored figure was kobo, so this round-trip is exact.
+    amount: toNaira(r.amountKobo),
     account: r.payoutAccount!,
     bankCode: r.payoutBankCode!,
     accountName: r.payoutAccountName!,

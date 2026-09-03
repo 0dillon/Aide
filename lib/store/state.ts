@@ -79,6 +79,11 @@ export type WithdrawalRecord = { accountId: string; amount: number; accountName:
 // A withdrawal armed but not yet executed. The user must speak `phrase` back
 // before the transfer runs — voice consent replacing a visual OTP.
 export type PendingWithdrawal = {
+  // Both are always present here, whichever era wrote the stored row: getWallet
+  // resolves that and fills in whichever is missing. `amountKobo` is the figure
+  // to compute with, `amount` the naira to show and to say. Nothing above the
+  // store should have to know a row can carry only one of them.
+  amountKobo: number;
   amount: number;
   phrase: string;
   // "word": random confirm word (employers). "passphrase": the worker's own

@@ -22,7 +22,7 @@ const setup = async () => {
 const arm = (t: Awaited<ReturnType<typeof setup>>, over: Record<string, unknown> = {}) =>
   t.mutation(api.wallets.armPending, {
     accountId: "u-worker",
-    amount: 5000,
+    amountKobo: 500_000,
     phrase: "mango",
     mode: "word" as const,
     destAccount: "0123456789",
@@ -47,7 +47,7 @@ describe("withdrawal confirmation — the double-spend gate", () => {
     await arm(t);
     const r = await consume(t, "mango");
     expect(r.ok).toBe(true);
-    expect(r.ok && r.amount).toBe(5000);
+    expect(r.ok && r.amountKobo).toBe(500_000);
     expect(r.ok && r.payoutAccount).toBe("0123456789");
   });
 
@@ -178,38 +178,38 @@ describe("withdrawal ledger — what makes the balance honest", () => {
 
   it("sums successful withdrawals", async () => {
     const t = await setup();
-    for (const amount of [1000, 2500]) {
+    for (const amountKobo of [100_000, 250_000]) {
       await t.mutation(api.wallets.recordWithdrawal, {
-        accountId: "u-worker", amount, accountName: "ADA OKAFOR", status: "SUCCESS", at: Date.now(),
+        accountId: "u-worker", amountKobo, accountName: "ADA OKAFOR", status: "SUCCESS", at: Date.now(),
       });
     }
-    expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-worker" })).toBe(3500);
+    expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-worker" })).toBe(350_000);
   });
 
   it("excludes FAILED transfers, so money that never left is not deducted", async () => {
     const t = await setup();
     await t.mutation(api.wallets.recordWithdrawal, {
-      accountId: "u-worker", amount: 1000, accountName: "A", status: "SUCCESS", at: Date.now(),
+      accountId: "u-worker", amountKobo: 100_000, accountName: "A", status: "SUCCESS", at: Date.now(),
     });
     await t.mutation(api.wallets.recordWithdrawal, {
-      accountId: "u-worker", amount: 9999, accountName: "A", status: "FAILED", at: Date.now(),
+      accountId: "u-worker", amountKobo: 999_900, accountName: "A", status: "FAILED", at: Date.now(),
     });
-    expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-worker" })).toBe(1000);
+    expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-worker" })).toBe(100_000);
   });
 
   it("counts a pending transfer, because the money is already committed", async () => {
     const t = await setup();
     await t.mutation(api.wallets.recordWithdrawal, {
-      accountId: "u-worker", amount: 2000, accountName: "A", status: "PENDING_AUTHORIZATION", at: Date.now(),
+      accountId: "u-worker", amountKobo: 200_000, accountName: "A", status: "PENDING_AUTHORIZATION", at: Date.now(),
     });
-    expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-worker" })).toBe(2000);
+    expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-worker" })).toBe(200_000);
   });
 
   it("keeps one account's ledger out of another's", async () => {
     const t = await setup();
     await t.mutation(api.wallets.ensure, { accountId: "u-other", accountReference: "aide-u-other" });
     await t.mutation(api.wallets.recordWithdrawal, {
-      accountId: "u-worker", amount: 5000, accountName: "A", status: "SUCCESS", at: Date.now(),
+      accountId: "u-worker", amountKobo: 500_000, accountName: "A", status: "SUCCESS", at: Date.now(),
     });
     expect(await t.query(api.wallets.withdrawnTotal, { accountId: "u-other" })).toBe(0);
   });

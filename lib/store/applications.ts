@@ -3,6 +3,7 @@ import { convexClient } from "../convex-server";
 import { JOBS, worker, type Application, type McqQuestion } from "./state";
 import { assessmentPromptFor, getJob, listJobs, publicJob } from "./jobs";
 import { getBalance, getWallet } from "./payments";
+import { sumKobo, toKobo, toNaira } from "../money";
 
 // Applications live in Convex so the worker↔employer loop (apply → assessed →
 // hired/rejected/paid) is visible to both parties no matter which serverless
@@ -281,13 +282,21 @@ export async function verifyPaymentCoverage(workerAccountId: string, jobId: stri
   const { balance } = await getBalance(workerAccountId);
   const apps = await getApplications(workerAccountId);
   const paid = apps.filter((a) => a.status === "paid");
-  let alreadyClaimed = 0;
-  for (const a of paid) alreadyClaimed += (await getJob(a.jobId))?.pay ?? 0;
-  if (balance >= alreadyClaimed + job.pay) return { ok: true, message: "Confirmed payment covers this gig." };
-  const short = alreadyClaimed + job.pay - balance;
+  // Whole kobo for the comparison and the shortfall. Gig pay carries kobo, and
+  // adding a few naira floats lands a hair either side of the true total: a
+  // worker covered to the exact kobo gets told they were not paid, and the
+  // shortfall Aide reads out comes back as "0.010000000000218279 naira", which
+  // is neither true nor sayable. Whoever hears it cannot check the screen.
+  const claimedPays: number[] = [];
+  for (const a of paid) claimedPays.push(toKobo((await getJob(a.jobId))?.pay ?? 0));
+  const claimedKobo = sumKobo(claimedPays);
+  const balanceKobo = toKobo(balance);
+  const owedKobo = claimedKobo + toKobo(job.pay);
+  if (balanceKobo >= owedKobo) return { ok: true, message: "Confirmed payment covers this gig." };
+  const short = toNaira(owedKobo - balanceKobo);
   return {
     ok: false,
-    message: `No confirmed payment covers this gig yet. The worker's confirmed inbound total is ${balance} naira and ${alreadyClaimed} naira is already claimed by other paid gigs — ${short} naira more must land first. Send the pay from the payout desk, then try again.`,
+    message: `No confirmed payment covers this gig yet. The worker's confirmed inbound total is ${toNaira(balanceKobo)} naira and ${toNaira(claimedKobo)} naira is already claimed by other paid gigs — ${short} naira more must land first. Send the pay from the payout desk, then try again.`,
   };
 }
 

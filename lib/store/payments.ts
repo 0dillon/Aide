@@ -53,10 +53,31 @@ type WalletDoc = {
   payoutAccountName?: string;
   payoutSetAt?: number;
   securityPhraseHash?: string;
-  pendingWithdrawal?: Wallet["pendingWithdrawal"];
+  // As STORED: a pending armed before the kobo migration has only `amount`, one
+  // armed after has both. Deliberately looser than Wallet["pendingWithdrawal"],
+  // which promises both — normalizePending is what makes that promise true.
+  pendingWithdrawal?: Omit<NonNullable<Wallet["pendingWithdrawal"]>, "amount" | "amountKobo"> & {
+    amount?: number;
+    amountKobo?: number;
+  };
   knownTxRefs?: string[];
   txSeeded?: boolean;
 };
+
+// One honest naira figure and one kobo figure, whichever era wrote the row.
+// The greeting reads the naira aloud; if it were undefined Aide would say "a
+// withdrawal of undefined naira waiting", and the person listening has no
+// screen to catch it on.
+function normalizePending(p: WalletDoc["pendingWithdrawal"]): Wallet["pendingWithdrawal"] {
+  if (!p) return undefined;
+  const amountKobo = p.amountKobo ?? (p.amount !== undefined ? Math.round(p.amount * 100) : undefined);
+  if (amountKobo === undefined) {
+    // An armed withdrawal we cannot price. Saying nothing is safe; inventing a
+    // figure, or speaking "undefined", is not.
+    throw new Error("Armed withdrawal carries no amount in either naira or kobo");
+  }
+  return { ...p, amountKobo, amount: toNaira(amountKobo) };
+}
 
 function toWallet(d: WalletDoc): Wallet {
   return {
@@ -71,7 +92,7 @@ function toWallet(d: WalletDoc): Wallet {
     payoutAccountName: d.payoutAccountName,
     payoutSetAt: d.payoutSetAt,
     hasSecurityPhrase: !!d.securityPhraseHash,
-    pendingWithdrawal: d.pendingWithdrawal,
+    pendingWithdrawal: normalizePending(d.pendingWithdrawal),
     knownTxRefs: new Set(d.knownTxRefs ?? []),
     txSeeded: d.txSeeded ?? false,
   };

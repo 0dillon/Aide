@@ -83,7 +83,7 @@ export function parseNgnBalanceKobo(body: unknown): number {
 const POOLED_ID = /^pooled-/i;
 const POOLED_NAME = /bkey/i;
 
-export function parseNgnDepositAccount(body: unknown): { accountNumber: string; bankName: string } {
+export function parseNgnDepositAccount(body: unknown): { accountNumber: string; bankName: string; accountName: string } {
   const list = obj(body).accounts;
   if (!Array.isArray(list) || list.length === 0) {
     throw new Error("BMONI returned no naira deposit account for this user");
@@ -111,7 +111,16 @@ export function parseNgnDepositAccount(body: unknown): { accountNumber: string; 
     );
   }
   const a = own[0];
-  return { accountNumber: str(a.accountNumber, "accounts[].accountNumber"), bankName: str(a.bankName, "accounts[].bankName") };
+  return {
+    accountNumber: str(a.accountNumber, "accounts[].accountNumber"),
+    bankName: str(a.bankName, "accounts[].bankName"),
+    // The name the BANK holds for this account, which is NOT the Aide profile
+    // name — "Dillon Bunch" against a profile reading "Bunch Dillon", and
+    // "Jabo Samson Joe" against "ClearVoice Media". Whoever pays in will see
+    // this one during their own name enquiry, so it is the only one Aide may
+    // read out as the account holder.
+    accountName: str(a.accountName, "accounts[].accountName"),
+  };
 }
 
 // ---- GET …/bank-accounts/nigerian-banks -------------------------------------

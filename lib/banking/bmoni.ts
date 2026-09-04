@@ -147,7 +147,7 @@ export async function pointDepositsAtWallet(
 }
 
 // The account number a worker actually gives out to be paid into.
-export async function getNgnDepositAccount(userId: string): Promise<{ accountNumber: string; bankName: string }> {
+export async function getNgnDepositAccount(userId: string): Promise<{ accountNumber: string; bankName: string; accountName: string }> {
   return parseNgnDepositAccount(await bmoniRead({ path: `/v1/users/${userId}/bank-accounts/deposit-accounts/NGN` }));
 }
 

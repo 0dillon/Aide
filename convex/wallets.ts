@@ -63,10 +63,24 @@ export const ensure = mutation({
 });
 
 export const setProvisioned = mutation({
-  args: { accountId: v.string(), accountReference: v.string(), accountNumber: v.string(), bankName: v.string() },
+  args: {
+    accountId: v.string(),
+    accountReference: v.string(),
+    accountNumber: v.string(),
+    bankName: v.string(),
+    // Optional so the Monnify path, which has no separate bank-held name,
+    // still calls this unchanged.
+    accountName: v.optional(v.string()),
+  },
   handler: async (ctx, a) => {
     const w = await walletDoc(ctx, a.accountId);
-    const patch = { status: "active" as const, accountNumber: a.accountNumber, bankName: a.bankName, lastError: undefined };
+    const patch = {
+      status: "active" as const,
+      accountNumber: a.accountNumber,
+      bankName: a.bankName,
+      accountName: a.accountName,
+      lastError: undefined,
+    };
     if (w) await ctx.db.patch(w._id, patch);
     else await ctx.db.insert("wallets", { accountId: a.accountId, accountReference: a.accountReference, knownTxRefs: [], txSeeded: false, ...patch });
   },

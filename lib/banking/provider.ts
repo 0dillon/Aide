@@ -37,7 +37,11 @@ export interface PaymentProvider {
   readonly name: ProviderName;
 
   // Make sure the account can receive money, and return where it lands.
-  ensureWallet(accountId: string): Promise<{ accountNumber?: string; bankName?: string }>;
+  //
+  // `accountName` is the name the BANK holds, which is not the Aide profile
+  // name. Whoever pays in sees it during their own name enquiry, so it is the
+  // only name Aide may present as the account holder.
+  ensureWallet(accountId: string): Promise<{ accountNumber?: string; bankName?: string; accountName?: string }>;
 
   // Confirmed money IN, in kobo. The credit side of the balance.
   //

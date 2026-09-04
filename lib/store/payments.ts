@@ -51,6 +51,7 @@ type WalletDoc = {
   status: "unprovisioned" | "active" | "failed";
   accountNumber?: string;
   bankName?: string;
+  accountName?: string;
   lastError?: string;
   payoutAccount?: string;
   payoutBankCode?: string;
@@ -90,6 +91,7 @@ function toWallet(d: WalletDoc): Wallet {
     status: d.status,
     accountNumber: d.accountNumber,
     bankName: d.bankName,
+    accountName: d.accountName,
     lastError: d.lastError,
     payoutAccount: d.payoutAccount,
     payoutBankCode: d.payoutBankCode,
@@ -135,14 +137,14 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
     // adapter calls back into this very function.
     if (selectedProvider() !== "monnify") {
       const ref = wallet.accountReference;
-      const { accountNumber, bankName } = await paymentProvider().ensureWallet(accountId);
+      const { accountNumber, bankName, accountName } = await paymentProvider().ensureWallet(accountId);
       if (!accountNumber || !bankName) {
         // No account number means nothing to give an employer. Recording it as
         // active would have Aide read out a blank where a NUBAN should be.
         throw new Error(`${selectedProvider()} returned no receiving account for ${accountId}`);
       }
-      await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName });
-      return { ...wallet, status: "active" as const, accountNumber, bankName, lastError: undefined };
+      await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName, accountName });
+      return { ...wallet, status: "active" as const, accountNumber, bankName, accountName, lastError: undefined };
     }
 
     const acc = await getAccount(accountId);

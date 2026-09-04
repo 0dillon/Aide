@@ -28,7 +28,7 @@ export const bmoniProvider: PaymentProvider = {
     // The NUBAN a worker actually gives out. Read separately: the wallet is an
     // address, the deposit account is the bank-facing side of it.
     const deposit = await getNgnDepositAccount(bmoniUserId);
-    return { accountNumber: deposit.accountNumber, bankName: deposit.bankName };
+    return { accountNumber: deposit.accountNumber, bankName: deposit.bankName, accountName: deposit.accountName };
   },
 
   // BMONI holds the wallet, so the balance is simply what it reports. Nothing

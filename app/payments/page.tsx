@@ -36,6 +36,13 @@ type Summary = {
   role?: "worker" | "employer";
   accountNumber?: string;
   bankName?: string;
+  // What the BANK calls this account, which is not `name`. See the summary
+  // route: `name` is the Aide profile, this is what a payer's name enquiry
+  // returns. Showing the profile name here told an employer the account
+  // belonged to "ClearVoice Media" while their bank said "Jabo Samson Joe",
+  // which reads as a wrong account number and is a good reason to abandon a
+  // legitimate payment.
+  accountName?: string;
   payoutAccount?: string;
   payoutAccountName?: string;
   hasSecurityPhrase?: boolean;
@@ -398,7 +405,7 @@ export default function PaymentsPage() {
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Receive money</h2>
         <p className="mt-2 text-lg">Anyone can pay you by bank transfer to your real earnings account:</p>
         <dl className="mt-4 divide-y divide-[var(--line)] border-y border-[var(--line)]">
-          <Row label="Account name" value={summary?.name ?? "—"} onCopy={copy} copied={copied} />
+          <Row label="Account name" value={summary?.accountName ?? "—"} onCopy={copy} copied={copied} />
           <Row label="Account number" value={summary?.accountNumber ?? "—"} mono onCopy={copy} copied={copied} />
           <Row label="Bank" value={summary?.bankName ?? "—"} onCopy={copy} copied={copied} />
         </dl>

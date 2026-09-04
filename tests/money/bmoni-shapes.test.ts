@@ -150,7 +150,18 @@ describe("GET /v1/users/{id}/bank-accounts/deposit-accounts/NGN", () => {
     expect(parseNgnDepositAccount({ accounts: [own, ...pooled.accounts] })).toEqual({
       accountNumber: "4534076021",
       bankName: "PROVIDUS BANK",
+      accountName: "Dillon Bunch",
     });
+  });
+
+  it("returns the name the BANK holds, which is not the profile name", () => {
+    // The payments page used to show the Aide profile name here. An employer
+    // doing the transfer sees their own bank's name enquiry — "Dillon Bunch" —
+    // and if Aide has told them the account belongs to someone called
+    // something else, the sensible thing for them to do is stop, assuming they
+    // have the wrong number. Worse, the worker cannot see the screen to catch
+    // it: Aide would simply be stating a name no bank agrees with.
+    expect(parseNgnDepositAccount({ accounts: [own] }).accountName).toBe("Dillon Bunch");
   });
 
   it("still finds it when the pooled account is listed first", () => {
@@ -180,7 +191,11 @@ describe("GET /v1/users/{id}/bank-accounts/deposit-accounts/NGN", () => {
         },
       ],
     };
-    expect(parseNgnDepositAccount(own)).toEqual({ accountNumber: "8012345678", bankName: "9 Payment Service Bank" });
+    expect(parseNgnDepositAccount(own)).toEqual({
+      accountNumber: "8012345678",
+      bankName: "9 Payment Service Bank",
+      accountName: "Aide Demo Worker",
+    });
   });
 
   it("throws when there is no account at all", () => {

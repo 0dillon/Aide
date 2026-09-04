@@ -124,6 +124,8 @@ export type Wallet = {
   status: "unprovisioned" | "active" | "failed";
   accountNumber?: string;
   bankName?: string;
+  // The name the bank holds for this account. Distinct from the profile name.
+  accountName?: string;
   lastError?: string;
   payoutAccount?: string;
   payoutBankCode?: string;

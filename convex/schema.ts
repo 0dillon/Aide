@@ -61,6 +61,12 @@ export default defineSchema({
     status: v.union(v.literal("unprovisioned"), v.literal("active"), v.literal("failed")),
     accountNumber: v.optional(v.string()),
     bankName: v.optional(v.string()),
+    // The name the BANK holds for this account. Not the Aide profile name —
+    // BMONI returns "Dillon Bunch" for a profile reading "Bunch Dillon", and
+    // "Jabo Samson Joe" for one reading "ClearVoice Media". Whoever pays in
+    // sees this during their own name enquiry, so it is the only name Aide may
+    // present as the account holder.
+    accountName: v.optional(v.string()),
     lastError: v.optional(v.string()),
     payoutAccount: v.optional(v.string()),
     payoutBankCode: v.optional(v.string()),

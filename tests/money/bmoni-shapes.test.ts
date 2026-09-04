@@ -133,6 +133,31 @@ describe("GET /v1/users/{id}/bank-accounts/deposit-accounts/NGN", () => {
     ],
   };
 
+  // Captured live: the worker's own account is issued asynchronously, so the
+  // same user returns the pooled account alone for a few seconds and then both,
+  // own-account-first. Position is therefore meaningless.
+  const own = {
+    id: "143d061f-e98d-4ce1-b933-139176963dbb",
+    accountName: "Dillon Bunch",
+    bankName: "PROVIDUS BANK",
+    currency: "NGN",
+    accountNumber: "4534076021",
+    bankCode: "000023",
+    targetCurrency: "NGN",
+  };
+
+  it("picks the worker's own account out of a list that also holds the pooled one", () => {
+    expect(parseNgnDepositAccount({ accounts: [own, ...pooled.accounts] })).toEqual({
+      accountNumber: "4534076021",
+      bankName: "PROVIDUS BANK",
+    });
+  });
+
+  it("still finds it when the pooled account is listed first", () => {
+    // Nothing documents the ordering, so neither position may be assumed.
+    expect(parseNgnDepositAccount({ accounts: [...pooled.accounts, own] }).accountNumber).toBe("4534076021");
+  });
+
   it("refuses to hand out the pooled account as a worker's own", () => {
     // This is the most dangerous shape in the integration. It is a valid,
     // payable Nigerian account number — so Aide would read it aloud happily

@@ -88,20 +88,29 @@ export function parseNgnDepositAccount(body: unknown): { accountNumber: string; 
   if (!Array.isArray(list) || list.length === 0) {
     throw new Error("BMONI returned no naira deposit account for this user");
   }
-  const a = obj(list[0]);
-  const id = typeof a.id === "string" ? a.id : "";
-  const name = typeof a.accountName === "string" ? a.accountName : "";
+  // Filtered, not indexed. Verified against the sandbox: once the virtual
+  // account is issued the worker's own account comes FIRST and the pooled one
+  // second, but in the seconds before issuance completes the pooled account is
+  // the only entry — so `accounts[0]` is sometimes the right answer and
+  // sometimes the pooled house account, with nothing in the response to say
+  // which. Position cannot be trusted; the pooled one is excluded by identity.
+  const own = list.map(obj).filter((a) => {
+    const id = typeof a.id === "string" ? a.id : "";
+    const name = typeof a.accountName === "string" ? a.accountName : "";
+    return !POOLED_ID.test(id) && !POOLED_NAME.test(name);
+  });
 
-  if (POOLED_ID.test(id) || POOLED_NAME.test(name)) {
-    // Refusing here is the whole point. Handing this back would have Aide read
-    // a working account number aloud as the worker's own; an employer would
-    // pay into a shared pool with no reference tying it to anyone, and the
-    // money would be genuinely unrecoverable by this app.
+  if (own.length === 0) {
+    // Refusing here is the whole point. Handing the pooled account back would
+    // have Aide read a working account number aloud as the worker's own; an
+    // employer would pay into a shared pool with no reference tying it to
+    // anyone, and the money would be genuinely unrecoverable by this app.
     throw new Error(
-      `BMONI returned its pooled house account (${name || id}), not this worker's own. ` +
-        `A per-user virtual account has not been provisioned yet — it requires completed Nigerian onboarding.`,
+      "BMONI lists only its pooled house account for this user, not one of their own. The per-user " +
+        "virtual account is issued by Nigerian onboarding and appears a few seconds later — wait and re-read.",
     );
   }
+  const a = own[0];
   return { accountNumber: str(a.accountNumber, "accounts[].accountNumber"), bankName: str(a.bankName, "accounts[].bankName") };
 }
 

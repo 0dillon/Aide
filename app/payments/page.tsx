@@ -7,6 +7,26 @@ type Txn = { amount: number; status: string; from: string; reference: string; at
 type Withdrawal = { amount: number; accountName: string; status: string; at: number };
 type Beneficiary = { accountName: string; accountNumber: string; bankCode: string; bankName?: string };
 
+// Mirrors app/api/payments/card/route.ts. The four non-ok states are kept
+// separate rather than folded into "no card": telling a worker whose card is
+// mid-issuance that they have none invites them to request a second one, and
+// the issuance fee is charged per request.
+type CardView = {
+  id: string;
+  name: string;
+  color?: string;
+  currency: string;
+  type: string;
+  status: string;
+  reserved: boolean;
+  spoken: string;
+};
+type CardState =
+  | { state: "ok"; cards: CardView[] }
+  | { state: "not-configured" }
+  | { state: "no-wallet" }
+  | { state: "unavailable"; message?: string };
+
 type Summary = {
   // null when the bank could not be reached. Unknown is not zero, and must
   // never be rendered as one.
@@ -59,6 +79,9 @@ export default function PaymentsPage() {
     outbound: Withdrawal[];
   } | null>(null);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
+  // null means "still checking", which the panel says out loud rather than
+  // rendering as an empty card.
+  const [card, setCard] = useState<CardState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -100,10 +123,15 @@ export default function PaymentsPage() {
     setError(null);
     try {
       // Summary is primary; history and beneficiaries are secondary and never fail the page.
-      const [res, h, b] = await Promise.all([
+      const [res, h, b, c] = await Promise.all([
         fetch("/api/payments/summary"),
         fetch("/api/payments/transactions").then((r) => r.json()).catch(() => null),
         fetch("/api/payments/beneficiaries").then((r) => r.json()).catch(() => null),
+        // Secondary, like history: a card read that fails must not take the
+        // balance down with it.
+        fetch("/api/payments/card")
+          .then((r) => r.json())
+          .catch(() => ({ state: "unavailable" as const })),
       ]);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not load your payment details.");
@@ -114,6 +142,7 @@ export default function PaymentsPage() {
       if (data?.balanceUnavailable) speakRef.current(data.balanceUnavailable);
       if (h && !h.error) setHistory(h);
       if (b?.beneficiaries) setBeneficiaries(b.beneficiaries);
+      setCard(c?.state ? c : { state: "unavailable" });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -620,7 +649,101 @@ export default function PaymentsPage() {
           </ul>
         )}
       </section>
+
+      {/* BMONI card */}
+      <BmoniCardSection card={card} balance={summary?.balance ?? null} />
     </main>
+  );
+}
+
+// The card panel at the foot of the page.
+//
+// Every state here is stated in words as well as drawn, because the person
+// this page is for cannot see the card face. The card is rendered even when
+// there is no card — an empty outline that says so — rather than the section
+// vanishing, so "you have no card" and "the panel did not load" are not the
+// same silence.
+//
+// There is deliberately no card number on the face. BMONI returns the PAN only
+// from a separate sensitive-data call it documents as never-log, never-cache,
+// and it publishes no masked-PAN field on the list route at all — so any digits
+// drawn here would be invented ones.
+function BmoniCardSection({ card, balance }: { card: CardState | null; balance: number | null }) {
+  const cards = card?.state === "ok" ? card.cards : [];
+  const first = cards[0];
+
+  const spoken =
+    card === null
+      ? "Checking your card…"
+      : card.state === "not-configured"
+        ? "Card accounts are not switched on for this app yet."
+        : card.state === "no-wallet"
+          ? "You do not have a card account yet."
+          : card.state === "unavailable"
+            ? card.message || "I could not check your card just now."
+            : first
+              ? first.spoken
+              : "You do not have a card yet.";
+
+  return (
+    <section id="card" aria-label="Card" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+      <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Card</h2>
+
+      <div className="mt-4 flex flex-wrap items-start gap-6">
+        <div
+          className="flex aspect-[1.586/1] w-full max-w-[22rem] flex-col justify-between rounded-2xl border-2 p-5 text-white shadow-sm"
+          style={{
+            // The colour is the one the card was created with. Without a card
+            // it stays a neutral outline rather than borrowing a live card's
+            // look for something that does not exist.
+            background: first ? (first.color ?? "#1B4332") : "var(--line)",
+            borderColor: first ? "transparent" : "var(--ink-soft)",
+            color: first ? "#fff" : "var(--ink-soft)",
+          }}
+        >
+          <div className="flex items-start justify-between">
+            <span className="text-sm font-bold uppercase tracking-widest opacity-90">BMONI</span>
+            {first && (
+              <span className="rounded-full border border-current px-2 py-0.5 text-xs font-bold uppercase">
+                {first.type}
+              </span>
+            )}
+          </div>
+
+          {/* Where a PAN would go on a real card. It stays hidden by design. */}
+          <p className="font-mono text-xl tracking-[0.2em] opacity-80">•••• •••• •••• ••••</p>
+
+          <div className="flex items-end justify-between gap-3">
+            <span className="text-base font-bold">{first ? first.name : "No card yet"}</span>
+            <span className="text-sm font-bold tabular-nums opacity-90">
+              {first ? first.currency : ""}
+              {first && balance !== null ? ` ${naira(balance)}` : ""}
+            </span>
+          </div>
+        </div>
+
+        <div className="min-w-[14rem] flex-1">
+          <p role="status" className="text-lg font-bold">
+            {spoken}
+          </p>
+          {first && (
+            <dl className="mt-3 space-y-1 text-sm">
+              <div className="flex gap-2">
+                <dt className="text-[var(--ink-soft)]">Status</dt>
+                <dd className="font-bold">{first.reserved ? "being issued" : first.status.toLowerCase()}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-[var(--ink-soft)]">Currency</dt>
+                <dd className="font-bold">{first.currency}</dd>
+              </div>
+            </dl>
+          )}
+          <p className="mt-3 text-sm text-[var(--ink-soft)]">
+            The card number is never shown here. Ask Aide to read your card details aloud when you need them.
+          </p>
+        </div>
+      </div>
+    </section>
   );
 }
 

@@ -1,5 +1,6 @@
 import { bmoniMove, bmoniRead, BmoniError } from "./bmoni-client";
 import { koboToDecimalString } from "./amounts";
+import { parseCards } from "./bmoni-cards";
 import { parseBanks, parseCreatedUser, parseCreatedWallet, parseNgnBalanceKobo, parseNgnDepositAccount } from "./bmoni-shapes";
 
 // The BMONI Embedded operations Aide uses, in lifecycle order:
@@ -264,3 +265,11 @@ export async function getProposal(userId: string, proposalId: string): Promise<P
 }
 
 export { BmoniError };
+
+// ---- 7. Cards ---------------------------------------------------------------
+
+// Cards are LISTED on the smart-wallet path but CREATED on the user path — the
+// asymmetry is real and cost an afternoon: POST to the wallet path is a 404.
+export async function listCards(userId: string, smartWalletId: string) {
+  return parseCards(await bmoniRead({ path: `/v1/users/${userId}/smart-wallets/${smartWalletId}/cards` }));
+}

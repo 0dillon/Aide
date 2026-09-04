@@ -6,6 +6,12 @@ export const runtime = "nodejs";
 // to kill the request before our own timeout can report why it failed.
 export const maxDuration = 30;
 
+// MONNIFY ONLY. This route is inert when BMONI is the live provider — nothing
+// at BMONI posts here, and no signature it sent would verify. Arrivals on
+// BMONI reach the user through the poller in lib/store/events.ts, which reads
+// the wallet's own transaction history through the seam. Do not read a quiet
+// log here as "no money has arrived".
+//
 // Monnify webhook receiver. Signature-checked (SHA-512 HMAC of the raw body),
 // and the transaction is ALWAYS re-fetched server-side before anything is
 // announced — a webhook payload alone is never trusted about money. The

@@ -49,21 +49,7 @@ type Summary = {
   pendingWithdrawal?: { amount: number } | null;
 };
 
-const BANKS = [
-  { code: "044", name: "Access Bank" },
-  { code: "050", name: "Ecobank" },
-  { code: "070", name: "Fidelity Bank" },
-  { code: "011", name: "First Bank" },
-  { code: "214", name: "FCMB" },
-  { code: "058", name: "GTBank" },
-  { code: "076", name: "Polaris Bank" },
-  { code: "221", name: "Stanbic IBTC" },
-  { code: "232", name: "Sterling Bank" },
-  { code: "032", name: "Union Bank" },
-  { code: "033", name: "UBA" },
-  { code: "035", name: "Wema Bank" },
-  { code: "057", name: "Zenith Bank" },
-];
+type Bank = { code: string; name: string };
 
 const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 
@@ -101,7 +87,14 @@ export default function PaymentsPage() {
   // Destination: a saved beneficiary, or new account details with inline validation
   const [destChoice, setDestChoice] = useState<string>("new"); // "new" | `${accountNumber}|${bankCode}`
   const [acct, setAcct] = useState("");
-  const [bank, setBank] = useState("058");
+  // Fetched, never hardcoded. The list used to be thirteen NIP codes baked
+  // into this file — Monnify's vocabulary. BMONI calls the same banks
+  // something else (Wema 035 vs 000017), and sending the wrong one fails name
+  // enquiry with a message about the account number, so the person tries a
+  // different account instead of a different bank. null = still loading.
+  const [banks, setBanks] = useState<Bank[] | null>(null);
+  const [banksError, setBanksError] = useState<string | null>(null);
+  const [bank, setBank] = useState("");
   const [validation, setValidation] = useState<Validation>({ status: "idle" });
   const validateSeq = useRef(0);
 
@@ -130,7 +123,7 @@ export default function PaymentsPage() {
     setError(null);
     try {
       // Summary is primary; history and beneficiaries are secondary and never fail the page.
-      const [res, h, b, c] = await Promise.all([
+      const [res, h, b, c, bk] = await Promise.all([
         fetch("/api/payments/summary"),
         fetch("/api/payments/transactions").then((r) => r.json()).catch(() => null),
         fetch("/api/payments/beneficiaries").then((r) => r.json()).catch(() => null),
@@ -139,6 +132,9 @@ export default function PaymentsPage() {
         fetch("/api/payments/card")
           .then((r) => r.json())
           .catch(() => ({ state: "unavailable" as const })),
+        fetch("/api/payments/banks")
+          .then((r) => r.json())
+          .catch(() => ({ banks: null, error: "I could not load the list of banks just now." })),
       ]);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not load your payment details.");
@@ -150,6 +146,18 @@ export default function PaymentsPage() {
       if (h && !h.error) setHistory(h);
       if (b?.beneficiaries) setBeneficiaries(b.beneficiaries);
       setCard(c?.state ? c : { state: "unavailable" });
+      if (Array.isArray(bk?.banks)) {
+        setBanks(bk.banks);
+        setBanksError(null);
+        // Deliberately NOT auto-selected. With Monnify's thirteen banks a
+        // default of GTBank was harmless; BMONI returns 302, and defaulting
+        // landed on "AGOSASA MICROFINANCE BANK" — a bank nobody chose, sitting
+        // pre-selected under an account number someone typed. On a screen you
+        // would notice. This page is for people who cannot look.
+      } else {
+        setBanks([]);
+        setBanksError(bk?.error ?? "I could not load the list of banks just now.");
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -166,7 +174,9 @@ export default function PaymentsPage() {
   // response can't overwrite a newer one.
   useEffect(() => {
     if (destChoice !== "new") return;
-    if (!/^\d{10}$/.test(acct)) {
+    // No bank chosen yet: nothing to verify against, and verifying against a
+    // default nobody picked is how money reaches the wrong account.
+    if (!bank || !/^\d{10}$/.test(acct)) {
       setValidation({ status: "idle" });
       return;
     }
@@ -498,14 +508,25 @@ export default function PaymentsPage() {
                     id="payout-bank"
                     value={bank}
                     onChange={(e) => setBank(e.target.value)}
+                    disabled={!banks || banks.length === 0}
                     className="mt-1 w-56 rounded-lg border-2 border-[var(--line)] bg-white px-4 py-3 text-lg"
                   >
-                    {BANKS.map((b) => (
+                    {banks === null && <option value="">Loading banks…</option>}
+                    {banks?.length === 0 && <option value="">No banks available</option>}
+                    {/* Stays selectable so the field can be returned to "unset"
+                        rather than trapping whatever was picked first. */}
+                    {banks !== null && banks.length > 0 && <option value="">Choose a bank…</option>}
+                    {banks?.map((b) => (
                       <option key={b.code} value={b.code}>
                         {b.name}
                       </option>
                     ))}
                   </select>
+                  {banksError && (
+                    <p role="alert" className="mt-1 font-bold text-[var(--alert)]">
+                      {banksError}
+                    </p>
+                  )}
                 </div>
                 {/* Inline validation status — right under the fields, spoken-friendly */}
                 <p aria-live="polite" className="w-full font-bold">

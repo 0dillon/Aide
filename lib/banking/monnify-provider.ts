@@ -18,6 +18,25 @@ const SUCCEEDED = new Set(["SUCCESS", "COMPLETED"]);
 const IN_FLIGHT = new Set(["PENDING", "PENDING_AUTHORIZATION", "PROCESSING"]);
 const FAILED = new Set(["FAILED", "REVERSED", "EXPIRED"]);
 
+// The NIP codes the payments page used to hardcode. They live here now so the
+// UI can stop knowing them — they are Monnify's vocabulary, not Aide's, and
+// BMONI's codes for the same banks are different.
+const MONNIFY_BANKS = [
+  { code: "044", name: "Access Bank" },
+  { code: "050", name: "Ecobank" },
+  { code: "070", name: "Fidelity Bank" },
+  { code: "011", name: "First Bank" },
+  { code: "214", name: "FCMB" },
+  { code: "058", name: "GTBank" },
+  { code: "076", name: "Polaris Bank" },
+  { code: "221", name: "Stanbic IBTC" },
+  { code: "232", name: "Sterling Bank" },
+  { code: "032", name: "Union Bank" },
+  { code: "033", name: "UBA" },
+  { code: "035", name: "Wema Bank" },
+  { code: "057", name: "Zenith Bank" },
+];
+
 export const monnifyProvider: PaymentProvider = {
   name: "monnify",
 
@@ -52,7 +71,13 @@ export const monnifyProvider: PaymentProvider = {
     return Math.max(0, sumKobo(inbound.map((c) => c.amountKobo)) - withdrawnKobo);
   },
 
-  async verifyDestination(accountNumber, bankCode): Promise<VerifiedAccount> {
+  // Monnify's list is global, so the account is not consulted. Kept in the
+  // signature because BMONI's is not.
+  async listBanks() {
+    return MONNIFY_BANKS.map((b) => ({ ...b }));
+  },
+
+  async verifyDestination(_accountId, accountNumber, bankCode): Promise<VerifiedAccount> {
     const r = await validateBankAccount(accountNumber, bankCode);
     return { accountNumber: r.accountNumber, accountName: r.accountName, bankCode };
   },

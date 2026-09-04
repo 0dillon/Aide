@@ -1,7 +1,7 @@
 import { bmoniMove, bmoniRead, BmoniError } from "./bmoni-client";
 import { koboToDecimalString } from "./amounts";
 import { parseCards } from "./bmoni-cards";
-import { parseWalletTransactions } from "./bmoni-shapes";
+import { parseVerifiedAccount, parseWalletTransactions } from "./bmoni-shapes";
 import { parseBanks, parseCreatedUser, parseCreatedWallet, parseNgnBalanceKobo, parseNgnDepositAccount } from "./bmoni-shapes";
 
 // The BMONI Embedded operations Aide uses, in lifecycle order:
@@ -25,12 +25,15 @@ export type Proposal = { proposalId: string; status: string };
 
 export type NewUser = { firstName: string; lastName: string; email: string; phoneNumber: string };
 
-// A 409 means a previous attempt already created this user. BMONI documents
-// recovering with `findUserByEmail`, but publishes no such endpoint — there is
-// no way to ask "which user is that?" after the fact. So the bmoniUserId must
-// be persisted by US at creation, and a 409 is only survivable if we already
-// hold it. The caller is responsible for that; this throws with the conflict
-// flagged so it can look in its own store rather than creating a second user.
+// A 409 means a previous attempt already created this user, guarded on email
+// and phone. It IS recoverable: GET /v1/users lists every partner user with
+// their bmoniUserId, email and phone, so the id can be found again. (BMONI's
+// own docs name a `findUserByEmail` that does not exist; the list route is
+// what actually works.)
+//
+// The id is still persisted at creation rather than relied on being
+// re-findable, because the list is shared across every team on the sandbox and
+// matching the wrong row would bind a worker's wages to a stranger's wallet.
 export async function createBmoniUser(u: NewUser): Promise<BmoniUser> {
   return parseCreatedUser(await bmoniRead({ path: "/v1/users", method: "POST", body: u }));
 }
@@ -163,12 +166,14 @@ export async function verifyNigerianAccount(
   userId: string,
   accountNumber: string,
   bankCode: string,
-): Promise<{ accountHolderName: string }> {
-  return await bmoniRead({
-    path: `/v1/users/${userId}/bank-accounts/verify-nigerian-account`,
-    method: "POST",
-    body: { accountNumber, bankCode },
-  });
+): Promise<{ accountNumber: string; accountName: string; bankName: string; bankCode: string }> {
+  return parseVerifiedAccount(
+    await bmoniRead({
+      path: `/v1/users/${userId}/bank-accounts/verify-nigerian-account`,
+      method: "POST",
+      body: { accountNumber, bankCode },
+    }),
+  );
 }
 
 // Get-or-create: calling again with the same account returns the existing
@@ -271,6 +276,16 @@ export { BmoniError };
 
 // Cards are LISTED on the smart-wallet path but CREATED on the user path — the
 // asymmetry is real and cost an afternoon: POST to the wallet path is a 404.
+// Every partner user, with the bmoniUserId every other endpoint paths on.
+// Used to recover from a create-user conflict.
+export async function listBmoniUsers(): Promise<
+  Array<{ bmoniUserId: string; email?: string; phoneNumber?: string }>
+> {
+  const body = (await bmoniRead({ path: "/v1/users" })) as { users?: unknown };
+  if (!Array.isArray(body?.users)) throw new Error("BMONI /v1/users response has no users array");
+  return body.users as Array<{ bmoniUserId: string; email?: string; phoneNumber?: string }>;
+}
+
 export async function listCards(userId: string, smartWalletId: string) {
   return parseCards(await bmoniRead({ path: `/v1/users/${userId}/smart-wallets/${smartWalletId}/cards` }));
 }

@@ -173,3 +173,24 @@ export function parseWalletTransactions(body: unknown): WalletCredit[] {
   }
   return credits;
 }
+
+// ---- POST …/bank-accounts/verify-nigerian-account ---------------------------
+
+// Name enquiry. The holder is `accountName`, NOT `accountHolderName` as the
+// client first assumed — another silent undefined, and this one would have had
+// Aide read back an empty account holder at the exact moment a worker is being
+// asked to approve where their wages go.
+export function parseVerifiedAccount(body: unknown): {
+  accountNumber: string;
+  accountName: string;
+  bankName: string;
+  bankCode: string;
+} {
+  const a = obj(body);
+  return {
+    accountNumber: str(a.accountNumber, "accountNumber"),
+    accountName: str(a.accountName, "accountName"),
+    bankName: str(a.bankName, "bankName"),
+    bankCode: str(a.bankCode, "bankCode"),
+  };
+}

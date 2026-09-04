@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReservedAccount, getReservedAccount, validateBankAccount } from "../monnify";
+import { createReservedAccount, getReservedAccount } from "../monnify";
 import { paymentProvider, selectedProvider } from "../banking";
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
@@ -209,6 +209,13 @@ export async function cacheWalletBalance(accountId: string, inboundTotal: number
   balanceCache.set(accountId, { value: await availableFrom(accountId, inboundTotal), at: Date.now() });
 }
 
+// The provider's own figure, already spendable — nothing is derived from it.
+// Used by the arrival poller, which has just read the balance anyway and
+// should not make the next getBalance() ask again.
+export function cacheBalanceKobo(accountId: string, kobo: number): void {
+  balanceCache.set(accountId, { value: toNaira(kobo), at: Date.now() });
+}
+
 // TEMPORARY, and deliberately awkward to leave switched on.
 //
 // AIDE_DEMO_BALANCE stands in for the real figure ONLY when the bank cannot be
@@ -357,7 +364,11 @@ async function resolveDestination(
 ): Promise<{ ok: true; account: string; bankCode: string; accountName: string; addedAt?: number } | { ok: false; message: string }> {
   if (dest?.accountNumber && dest?.bankCode) {
     try {
-      const r = await validateBankAccount(dest.accountNumber.trim(), dest.bankCode.trim());
+      // Through the seam: the bank CODES differ per provider, so verifying a
+      // BMONI destination against Monnify's name enquiry resolves a different
+      // bank or none at all. This is the check that reads a real account
+      // holder's name back before a worker approves the transfer.
+      const r = await paymentProvider().verifyDestination(accountId, dest.accountNumber.trim(), dest.bankCode.trim());
       return { ok: true, account: r.accountNumber, bankCode: dest.bankCode.trim(), accountName: r.accountName, addedAt: Date.now() };
     } catch {
       return { ok: false, message: "Bank details not found — check the account number and bank, then try again." };

@@ -2,7 +2,13 @@ import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "../store/accounts";
 import { decimalStringToKobo } from "./amounts";
-import { getNgnBalanceKobo, getNgnDepositAccount, listWalletTransactions, verifyNigerianAccount } from "./bmoni";
+import {
+  getNgnBalanceKobo,
+  getNgnDepositAccount,
+  listNigerianBanks,
+  listWalletTransactions,
+  verifyNigerianAccount,
+} from "./bmoni";
 import { payOutToBank, provisionBmoniWallet } from "./bmoni-wallet";
 import type { InboundCredit, PaymentProvider, PayoutOutcome, VerifiedAccount } from "./provider";
 
@@ -52,16 +58,17 @@ export const bmoniProvider: PaymentProvider = {
     return await listWalletTransactions(w.bmoniUserId, w.bmoniSmartWalletId);
   },
 
-  async verifyDestination(accountNumber, bankCode): Promise<VerifiedAccount> {
-    // Name enquiry needs a user context in BMONI, unlike Monnify's global one.
-    const anyUser = process.env.BMONI_VERIFY_AS_USER_ID?.trim();
-    if (!anyUser) {
-      throw new Error(
-        "BMONI name enquiry is per-user; set BMONI_VERIFY_AS_USER_ID or verify through the paying account.",
-      );
-    }
-    const r = await verifyNigerianAccount(anyUser, accountNumber, bankCode);
-    return { accountNumber, bankCode, accountName: r.accountHolderName };
+  async listBanks(accountId) {
+    return await listNigerianBanks(await bmoniUserOf(accountId));
+  },
+
+  // Verified as the account doing the asking, rather than as some configured
+  // stand-in user. BMONI scopes name enquiry per user, and borrowing another
+  // user's context to ask about a stranger's account is both wrong and
+  // unnecessary now that every account has its own BMONI user.
+  async verifyDestination(accountId, accountNumber, bankCode): Promise<VerifiedAccount> {
+    const r = await verifyNigerianAccount(await bmoniUserOf(accountId), accountNumber, bankCode);
+    return { accountNumber, bankCode, accountName: r.accountName };
   },
 
   async payOut(args): Promise<PayoutOutcome> {

@@ -64,8 +64,20 @@ export interface PaymentProvider {
   // exactly like a true one when read aloud.
   getBalanceKobo(accountId: string): Promise<number>;
 
-  // Name enquiry. Throws if the account does not resolve — never guesses a name.
-  verifyDestination(accountNumber: string, bankCode: string): Promise<VerifiedAccount>;
+  // The banks this provider will pay out to, with ITS OWN codes.
+  //
+  // The two providers do not share a code list and the difference is silent.
+  // Wema is 035 to Monnify (NIP) and 000017 to BMONI (NIBSS); sending a NIP
+  // code to BMONI fails name enquiry outright, verified against the sandbox.
+  // So the list is fetched, never hardcoded in the UI.
+  //
+  // Takes an accountId because BMONI scopes this per user, unlike Monnify's
+  // global list.
+  listBanks(accountId: string): Promise<Array<{ name: string; code: string }>>;
+
+  // Name enquiry. Throws if the account does not resolve — never guesses a
+  // name. Scoped to the account doing the asking, for the same reason.
+  verifyDestination(accountId: string, accountNumber: string, bankCode: string): Promise<VerifiedAccount>;
 
   // Money OUT. Implementations must not retry and must not abort early.
   payOut(args: {

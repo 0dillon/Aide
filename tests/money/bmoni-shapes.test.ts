@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseBanks,
+  parseVerifiedAccount,
   parseCreatedUser,
   parseCreatedWallet,
   parseNgnBalanceKobo,
@@ -220,5 +221,34 @@ describe("GET /v1/users/{id}/bank-accounts/nigerian-banks", () => {
 
   it("throws on an unwrapped array rather than silently reading no banks", () => {
     expect(() => parseBanks([{ bankName: "WEMA BANK", bankCode: "000017" }])).toThrow(/array where an object/);
+  });
+});
+
+describe("POST …/bank-accounts/verify-nigerian-account", () => {
+  // Captured live on 2026-09-04. The client typed this as
+  // `accountHolderName`; the field is `accountName`, so name enquiry returned
+  // undefined and the withdrawal flow read out an undefined account holder —
+  // or registered the destination under an empty name.
+  const real = {
+    accountNumber: "3463455722",
+    accountName: "Jabo Samson Joe",
+    bankName: "PROVIDUS BANK",
+    bankCode: "000023",
+  };
+
+  it("reads the holder name from accountName", () => {
+    expect(parseVerifiedAccount(real)).toEqual({
+      accountNumber: "3463455722",
+      accountName: "Jabo Samson Joe",
+      bankName: "PROVIDUS BANK",
+      bankCode: "000023",
+    });
+  });
+
+  it("throws rather than returning an unnamed account", () => {
+    // The whole point of name enquiry is the name. Aide reads it back so the
+    // payer can stop before the money moves — an empty one removes the only
+    // check a blind user has on where their wages are going.
+    expect(() => parseVerifiedAccount({ ...real, accountName: undefined })).toThrow(/accountName/);
   });
 });

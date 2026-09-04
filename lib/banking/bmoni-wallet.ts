@@ -6,6 +6,7 @@ import { readProposalOutcome, type ProposalOutcome } from "./proposal-status";
 import {
   approveProposal,
   createBmoniUser,
+  listBmoniUsers,
   createNgnOfframp,
   createSmartWallet,
   getProposal,
@@ -101,13 +102,27 @@ export async function provisionBmoniWallet(
       bmoniUserId = (await createBmoniUser(identity)).bmoniUserId;
     } catch (e) {
       if (e instanceof BmoniError && e.isConflict) {
-        throw new Error(
-          `BMONI already holds a user for this email or phone (${e.message}), but we have no stored ` +
-            `bmoniUserId for ${accountId} and BMONI publishes no lookup endpoint. This needs manual ` +
-            `recovery — do not retry, it will keep colliding.`,
+        // Recoverable: a previous attempt created this user and we lost the
+        // id. GET /v1/users can find it again.
+        //
+        // Matched on the EXACT email and phone that were submitted, and only
+        // when exactly one row matches both. The sandbox list is shared with
+        // every other team, and a loose match here would bind this worker's
+        // wages to a stranger's wallet — which is worse than not recovering.
+        const candidates = (await listBmoniUsers().catch(() => [])).filter(
+          (u) => u.email?.toLowerCase() === identity.email.toLowerCase() && u.phoneNumber === identity.phoneNumber,
         );
+        if (candidates.length !== 1 || !candidates[0].bmoniUserId) {
+          throw new Error(
+            `BMONI already holds a user for this email or phone (${e.message}), and looking it up returned ` +
+              `${candidates.length} matches rather than exactly one. Refusing to guess which user is ` +
+              `${accountId} — binding the wrong one would send their wages to a stranger.`,
+          );
+        }
+        bmoniUserId = candidates[0].bmoniUserId;
+      } else {
+        throw e;
       }
-      throw e;
     }
     await convexClient().mutation(api.wallets.setBmoniUser, { accountId, accountReference, bmoniUserId });
   }
@@ -237,7 +252,7 @@ export async function payOutToBank(args: {
       accountNumber: args.accountNumber,
       bankCode: args.bankCode,
       bankName: args.bankName,
-      accountHolderName: verified.accountHolderName,
+      accountHolderName: verified.accountName,
     });
     bankAccountId = registered.id;
     await convexClient().mutation(api.wallets.rememberBmoniBankAccount, {

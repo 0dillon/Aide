@@ -1,15 +1,19 @@
 import { createHash } from "node:crypto";
-import { createReservedAccount, getReservedAccount, getReservedAccountTransactions, validateBankAccount } from "../monnify";
+import { createReservedAccount, getReservedAccount, validateBankAccount } from "../monnify";
+import { paymentProvider, selectedProvider } from "../banking";
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
 import { type Beneficiary, type Wallet, type WithdrawalRecord } from "./state";
 import { toKobo, toNaira } from "../money";
 
-// Per-account Monnify wallets, now backed by Convex so balances, payout
-// destinations, and armed withdrawals are shared across serverless instances.
-// available = confirmed inbound transfers to this wallet's NUBAN − this
-// wallet's withdrawals (the Convex ledger).
+// Per-account wallets, backed by Convex so balances, payout destinations, and
+// armed withdrawals are shared across serverless instances.
+//
+// The money itself lives with whichever provider is selected — BMONI by
+// default. The balance and the receiving account number both come from
+// `paymentProvider()` rather than from any one provider's SDK, so this file no
+// longer knows which rail it is on.
 
 const CONFIRM_WORDS = ["mango", "sunrise", "guitar", "river", "orange", "candle", "harvest", "compass"];
 const PENDING_TTL_MS = 5 * 60 * 1000;
@@ -124,6 +128,23 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
   const p = (async () => {
     const wallet = await getWallet(accountId);
     if (wallet.status === "active") return wallet;
+
+    // BMONI provisions through its own multi-step lifecycle (user → wallet →
+    // onboarding → virtual account), so the seam owns it. Only Monnify's
+    // reserved-account creation is inline below, because the seam's Monnify
+    // adapter calls back into this very function.
+    if (selectedProvider() !== "monnify") {
+      const ref = wallet.accountReference;
+      const { accountNumber, bankName } = await paymentProvider().ensureWallet(accountId);
+      if (!accountNumber || !bankName) {
+        // No account number means nothing to give an employer. Recording it as
+        // active would have Aide read out a blank where a NUBAN should be.
+        throw new Error(`${selectedProvider()} returned no receiving account for ${accountId}`);
+      }
+      await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName });
+      return { ...wallet, status: "active" as const, accountNumber, bankName, lastError: undefined };
+    }
+
     const acc = await getAccount(accountId);
     const ref = wallet.accountReference;
     let reserved;
@@ -212,9 +233,8 @@ export async function getBalance(accountId: string): Promise<{ balance: number; 
     if (cached && Date.now() - cached.at < BALANCE_TTL_MS && w.accountNumber) {
       return { balance: cached.value, account: w.accountNumber, bankName: w.bankName };
     }
-    const { content } = await getReservedAccountTransactions(w.accountReference);
-    const inbound = content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0);
-    const balance = await availableFrom(accountId, inbound);
+    // Kobo from the provider, naira out to callers that still speak it.
+    const balance = toNaira(await paymentProvider().getBalanceKobo(accountId));
     balanceCache.set(accountId, { value: balance, at: Date.now() });
     return { balance, account: w.accountNumber, bankName: w.bankName };
   } catch (e) {

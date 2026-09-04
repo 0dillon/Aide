@@ -2,7 +2,7 @@ import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "../store/accounts";
 import { decimalStringToKobo } from "./amounts";
-import { getNgnDepositAccount, listBalances, verifyNigerianAccount } from "./bmoni";
+import { getNgnBalanceKobo, getNgnDepositAccount, listBalances, verifyNigerianAccount } from "./bmoni";
 import { payOutToBank, provisionBmoniWallet } from "./bmoni-wallet";
 import type { InboundCredit, PaymentProvider, PayoutOutcome, VerifiedAccount } from "./provider";
 
@@ -16,6 +16,8 @@ async function bmoniUserOf(accountId: string): Promise<string> {
 
 export const bmoniProvider: PaymentProvider = {
   name: "bmoni",
+  // See PaymentProvider.canListInbound. BMONI has no such endpoint.
+  canListInbound: false,
 
   async ensureWallet(accountId) {
     const acc = (await getAccount(accountId)) as {
@@ -27,11 +29,16 @@ export const bmoniProvider: PaymentProvider = {
     const { bmoniUserId } = await provisionBmoniWallet(accountId, `aide-${accountId}`, acc);
     // The NUBAN a worker actually gives out. Read separately: the wallet is an
     // address, the deposit account is the bank-facing side of it.
-    const deposit = (await getNgnDepositAccount(bmoniUserId)) as {
-      accountNumber?: string;
-      bankName?: string;
-    } | null;
-    return { accountNumber: deposit?.accountNumber, bankName: deposit?.bankName };
+    const deposit = await getNgnDepositAccount(bmoniUserId);
+    return { accountNumber: deposit.accountNumber, bankName: deposit.bankName };
+  },
+
+  // BMONI holds the wallet, so the balance is simply what it reports. Nothing
+  // is subtracted here: withdrawals have already left the wallet on BMONI's
+  // side, and taking Aide's withdrawal ledger off again would double-count
+  // every payout and understate what the worker actually has.
+  async getBalanceKobo(accountId) {
+    return await getNgnBalanceKobo(await bmoniUserOf(accountId));
   },
 
   async listInbound(accountId): Promise<InboundCredit[]> {

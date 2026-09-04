@@ -146,7 +146,7 @@ export default function ProfilePage() {
             }}
             className="min-h-10 rounded-lg border-2 border-[var(--ink)] px-4 py-2 font-bold text-[var(--ink)]"
           >
-            Switch to Demo Worker (Aide Demo Worker)
+            Switch to Demo Worker (Bunch Dillon)
           </button>
         </div>
       )}

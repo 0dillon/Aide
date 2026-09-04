@@ -57,6 +57,12 @@ const outage = () => Object.assign(new Error("The operation was aborted due to t
 beforeEach(async () => {
   vi.resetModules();
   vi.unstubAllEnvs();
+  // These exercise the Monnify adapter specifically — the Monnify HTTP module
+  // is what they mock. BMONI is the default provider now, so the rail under
+  // test is named rather than assumed; without this they would run against
+  // BMONI and fail on a missing sandbox user rather than on anything they are
+  // actually asserting.
+  vi.stubEnv("AIDE_PAYMENT_PROVIDER", "monnify");
   vi.spyOn(console, "warn").mockImplementation(() => {});
   ({ getBalance } = await import("../../lib/store/payments"));
   calls = [];

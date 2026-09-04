@@ -169,7 +169,7 @@ const SEED_JOBS: Job[] = [
 function seedState(): StoreState {
   const w: Worker = {
     id: "demo-worker",
-    name: "Aide Demo Worker",
+    name: "Bunch Dillon",
     email: "aide-demo-worker@aide.test",
     skills: ["audio transcription", "translation", "data entry"],
     bio: "Experienced transcriber fluent in English and Yoruba. Detail-oriented and dedicated to delivering clean text under tight schedules.",

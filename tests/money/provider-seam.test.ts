@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { selectedProvider } from "../../lib/banking/provider";
 
-// The seam's only job at this stage is to be reversible, and reversibility
-// rests on one thing: the default has to be the provider that already works.
+// BMONI is the provider now: it holds the wallets, the naira balance and the
+// account numbers workers give out. So it is the default, and an unset or
+// misspelled env var lands there rather than on the old rail.
 //
-// A misspelled or half-set env var must not silently move a worker's wages
-// onto a sandbox integration. So selection is explicit-opt-in — anything that
-// is not exactly "bmoni" is Monnify.
+// Monnify has not been deleted — it is still reachable by name, as the way
+// back if the sandbox goes down mid-demo. But it is opt-in now, which is the
+// exact reverse of how this file used to read.
 
 describe("which provider is live", () => {
   beforeEach(() => {
@@ -14,22 +15,23 @@ describe("which provider is live", () => {
     delete process.env.AIDE_PAYMENT_PROVIDER;
   });
 
-  it("is Monnify when nothing is set", () => {
+  it("is BMONI when nothing is set", () => {
+    expect(selectedProvider()).toBe("bmoni");
+  });
+
+  it("is Monnify only when explicitly asked for", () => {
+    process.env.AIDE_PAYMENT_PROVIDER = "monnify";
+    expect(selectedProvider()).toBe("monnify");
+    process.env.AIDE_PAYMENT_PROVIDER = "  MONNIFY  ";
     expect(selectedProvider()).toBe("monnify");
   });
 
-  it("is BMONI only when explicitly asked for", () => {
-    process.env.AIDE_PAYMENT_PROVIDER = "bmoni";
-    expect(selectedProvider()).toBe("bmoni");
-    process.env.AIDE_PAYMENT_PROVIDER = "  BMONI  ";
-    expect(selectedProvider()).toBe("bmoni");
-  });
-
-  it("falls back to Monnify on anything unrecognised", () => {
-    // A typo must land on the provider that has been running, not the new one.
-    for (const v of ["bmon", "bmoni-dev", "BMONEY", "true", "1", ""]) {
+  it("falls back to BMONI on anything unrecognised", () => {
+    // A typo must land on the provider that actually holds the money, not on
+    // the one whose account numbers nobody is being paid into any more.
+    for (const v of ["monify", "monnify-sandbox", "MONEY", "true", "1", ""]) {
       process.env.AIDE_PAYMENT_PROVIDER = v;
-      expect(selectedProvider()).toBe("monnify");
+      expect(selectedProvider()).toBe("bmoni");
     }
   });
 });

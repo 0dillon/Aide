@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { api } from "../../convex/_generated/api";
+import { convexClient } from "../convex-server";
 import { getReservedAccountTransactions, singleTransfer, validateBankAccount } from "../monnify";
 import { ensureWallet as ensureMonnifyWallet, getWallet } from "../store/payments";
-import { toKobo, toNaira } from "../money";
+import { sumKobo, toKobo, toNaira } from "../money";
 import type { InboundCredit, PaymentProvider, PayoutOutcome, VerifiedAccount } from "./provider";
 
 // Monnify behind the same seam. This wraps the existing, working code rather
@@ -18,6 +20,7 @@ const FAILED = new Set(["FAILED", "REVERSED", "EXPIRED"]);
 
 export const monnifyProvider: PaymentProvider = {
   name: "monnify",
+  canListInbound: true,
 
   async ensureWallet(accountId) {
     const w = await ensureMonnifyWallet(accountId);
@@ -36,6 +39,18 @@ export const monnifyProvider: PaymentProvider = {
         from: t.customerDTO?.name,
         at: typeof t.createdOn === "number" ? t.createdOn : t.createdOn ? Date.parse(t.createdOn) : Date.now(),
       }));
+  },
+
+  // Monnify has no balance for a reserved account, so one is derived: what
+  // landed on the NUBAN, minus what Aide has already sent out. The withdrawal
+  // ledger is Aide's own — Monnify does not deduct payouts from the reserved
+  // account's transaction list — so it has to be subtracted here.
+  async getBalanceKobo(accountId) {
+    const [inbound, withdrawnKobo] = await Promise.all([
+      this.listInbound(accountId),
+      convexClient().query(api.wallets.withdrawnTotal, { accountId }) as Promise<number>,
+    ]);
+    return Math.max(0, sumKobo(inbound.map((c) => c.amountKobo)) - withdrawnKobo);
   },
 
   async verifyDestination(accountNumber, bankCode): Promise<VerifiedAccount> {

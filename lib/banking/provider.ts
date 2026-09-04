@@ -39,8 +39,31 @@ export interface PaymentProvider {
   // Make sure the account can receive money, and return where it lands.
   ensureWallet(accountId: string): Promise<{ accountNumber?: string; bankName?: string }>;
 
+  // Whether this provider can itemise money in at all.
+  //
+  // False is NOT "no payments". BMONI publishes a wallet balance but no
+  // wallet-level inbound history, so listInbound has nothing truthful to
+  // return — and an empty array would be rendered as "no payments received
+  // yet", which is a claim about the worker's employer that Aide cannot make.
+  // Callers must branch on this rather than on an empty list.
+  readonly canListInbound: boolean;
+
   // Confirmed money IN, in kobo. The credit side of the balance.
+  // Only meaningful when canListInbound is true.
   listInbound(accountId: string): Promise<InboundCredit[]>;
+
+  // The spendable balance, in kobo.
+  //
+  // Separate from listInbound because the two providers know it in genuinely
+  // different ways. Monnify has no balance for a reserved account, so its
+  // adapter derives one: confirmed credits minus Aide's own withdrawal ledger.
+  // BMONI holds the wallet, so it simply reports the figure and Aide must not
+  // second-guess it by subtracting a ledger the provider has already applied.
+  //
+  // Throwing is correct when the figure is unknown. There is no sentinel: a
+  // zero returned for "could not check" is the one wrong answer that sounds
+  // exactly like a true one when read aloud.
+  getBalanceKobo(accountId: string): Promise<number>;
 
   // Name enquiry. Throws if the account does not resolve — never guesses a name.
   verifyDestination(accountNumber: string, bankCode: string): Promise<VerifiedAccount>;
@@ -56,11 +79,14 @@ export interface PaymentProvider {
   }): Promise<PayoutOutcome>;
 }
 
-// Which provider is live. Monnify unless BMONI is explicitly selected, so an
-// unset or misspelled value falls back to the one that has been running rather
-// than to the new one.
+// Which provider is live. BMONI now, and by default — it holds the wallets,
+// the naira balance and the account numbers workers give out.
+//
+// Monnify is still reachable by setting AIDE_PAYMENT_PROVIDER=monnify. It stays
+// only as a way back if the sandbox goes down mid-demo; nothing routes to it
+// unless it is asked for by name.
 export function selectedProvider(): ProviderName {
-  return process.env.AIDE_PAYMENT_PROVIDER?.trim().toLowerCase() === "bmoni" ? "bmoni" : "monnify";
+  return process.env.AIDE_PAYMENT_PROVIDER?.trim().toLowerCase() === "monnify" ? "monnify" : "bmoni";
 }
 
 // Monnify reports naira as a float; everything above this line is kobo.

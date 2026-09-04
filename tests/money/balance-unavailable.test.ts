@@ -38,6 +38,12 @@ const ask = async () => {
 };
 
 beforeEach(() => {
+  // These exercise the Monnify adapter specifically — the Monnify HTTP module
+  // is what they mock. BMONI is the default provider now, so the rail under
+  // test is named rather than assumed; without this they would run against
+  // BMONI and fail on a missing sandbox user rather than on anything they are
+  // actually asserting.
+  vi.stubEnv("AIDE_PAYMENT_PROVIDER", "monnify");
   vi.clearAllMocks();
   store.getAccount.mockResolvedValue(ACCOUNT);
   store.getWallet.mockResolvedValue(WALLET);

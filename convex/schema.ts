@@ -46,6 +46,11 @@ export default defineSchema({
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
     phoneNumber: v.optional(v.string()), // E.164, e.g. +2348000000000
+    // Bank Verification Number, 11 digits. Nigerian onboarding needs it to
+    // issue the virtual account a worker is paid into. Optional because most
+    // accounts do not have one yet, and provisioning refuses rather than
+    // guessing — a wrong BVN fails KYC in a way nobody can debug later.
+    bvn: v.optional(v.string()),
   })
     .index("by_key", ["key"])
     .index("by_email", ["email"]),

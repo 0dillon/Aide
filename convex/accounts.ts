@@ -80,13 +80,32 @@ export const seedDefaults = mutation({
         skills: v.array(v.string()),
         bio: v.string(),
         createdAt: v.number(),
+        // The BMONI identity. Seeded rather than collected, because the demo
+        // accounts stand in for the two sandbox personas whose BVNs are the
+        // only ones that resolve.
+        firstName: v.optional(v.string()),
+        lastName: v.optional(v.string()),
+        phoneNumber: v.optional(v.string()),
+        bvn: v.optional(v.string()),
       }),
     ),
   },
   handler: async (ctx, { accounts }) => {
     for (const a of accounts) {
       const existing = await ctx.db.query("accounts").withIndex("by_key", (q) => q.eq("key", a.key)).first();
-      if (!existing) await ctx.db.insert("accounts", a);
+      if (!existing) {
+        await ctx.db.insert("accounts", a);
+        continue;
+      }
+      // Backfill only. A deployment seeded before these fields existed has
+      // demo accounts that cannot be provisioned at BMONI, and re-seeding is
+      // the only moment we know the persona details. Existing values are never
+      // overwritten — a real user who filled these in keeps what they entered.
+      const patch: Record<string, unknown> = {};
+      for (const k of ["firstName", "lastName", "phoneNumber", "bvn"] as const) {
+        if (a[k] && !existing[k]) patch[k] = a[k];
+      }
+      if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
     }
   },
 });

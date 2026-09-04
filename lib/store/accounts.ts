@@ -18,6 +18,10 @@ type ConvexAccount = {
   bio: string;
   preferences?: string[];
   createdAt: number;
+  firstName?: string;
+  lastName?: string;
+  phoneNumber?: string;
+  bvn?: string;
 };
 
 function toAccount(a: ConvexAccount): Account {
@@ -31,6 +35,10 @@ function toAccount(a: ConvexAccount): Account {
     bio: a.bio,
     preferences: a.preferences ?? [],
     createdAt: a.createdAt,
+    firstName: a.firstName,
+    lastName: a.lastName,
+    phoneNumber: a.phoneNumber,
+    bvn: a.bvn,
   };
 }
 
@@ -48,8 +56,13 @@ const FALLBACK_WORKER: Account = {
 };
 
 // The only shape of an account that may be serialized to the browser.
-export function publicAccount(a: Account): Omit<Account, "passwordHash"> & { authenticated: boolean } {
-  const { passwordHash, ...rest } = a;
+export function publicAccount(a: Account): Omit<Account, "passwordHash" | "bvn"> & { authenticated: boolean } {
+  // The BVN is stripped alongside the password hash, and for the same class of
+  // reason. It is not a profile detail: it is the identifier every Nigerian
+  // bank uses to tie a person to their accounts, it cannot be reissued if it
+  // leaks, and it is enough on its own to begin an identity fraud. Nothing in
+  // the browser needs it — it exists so BMONI can run KYC, server-side.
+  const { passwordHash, bvn: _bvn, ...rest } = a;
   return { ...rest, authenticated: !!passwordHash };
 }
 

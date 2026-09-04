@@ -79,7 +79,9 @@ export const monnifyProvider: PaymentProvider = {
 
   async verifyDestination(_accountId, accountNumber, bankCode): Promise<VerifiedAccount> {
     const r = await validateBankAccount(accountNumber, bankCode);
-    return { accountNumber: r.accountNumber, accountName: r.accountName, bankCode };
+    // Monnify's sandbox rejects accounts that do not exist, so its answer is a
+    // real one on both environments.
+    return { accountNumber: r.accountNumber, accountName: r.accountName, bankCode, nameVerified: true };
   },
 
   async payOut(args): Promise<PayoutOutcome> {

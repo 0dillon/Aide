@@ -10,6 +10,7 @@ import {
   verifyNigerianAccount,
 } from "./bmoni";
 import { payOutToBank, provisionBmoniWallet } from "./bmoni-wallet";
+import { isFabricatedNameEnquiry } from "./name-enquiry";
 import type { InboundCredit, PaymentProvider, PayoutOutcome, VerifiedAccount } from "./provider";
 
 // BMONI behind the seam. Every amount crossing back out of here is kobo.
@@ -68,7 +69,15 @@ export const bmoniProvider: PaymentProvider = {
   // unnecessary now that every account has its own BMONI user.
   async verifyDestination(accountId, accountNumber, bankCode): Promise<VerifiedAccount> {
     const r = await verifyNigerianAccount(await bmoniUserOf(accountId), accountNumber, bankCode);
-    return { accountNumber, bankCode, accountName: r.accountName };
+    return {
+      accountNumber,
+      bankCode,
+      accountName: r.accountName,
+      // False on the development host, which fabricates. The name still
+      // travels — it is needed to register the destination with BMONI — but
+      // callers must not show or say it as a confirmation.
+      nameVerified: !isFabricatedNameEnquiry("bmoni", process.env.BMONI_BASE_URL),
+    };
   },
 
   async payOut(args): Promise<PayoutOutcome> {

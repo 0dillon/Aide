@@ -25,7 +25,15 @@ export async function POST(req: Request) {
     // Through the seam: BMONI scopes name enquiry to the asking user, so this
     // is verified as the account that will be paying.
     const r = await paymentProvider().verifyDestination(acc.id, accountNumber.trim(), bankCode.trim());
-    return Response.json({ ok: true, accountName: r.accountName, accountNumber: r.accountNumber });
+    // The name is only returned when it means something. On an endpoint that
+    // fabricates, sending it would put "Account found: Ekon Orji" on screen
+    // for a number nobody has verified — and Aide would read it out.
+    return Response.json({
+      ok: true,
+      accountNumber: r.accountNumber,
+      accountName: r.nameVerified ? r.accountName : undefined,
+      nameVerified: r.nameVerified,
+    });
   } catch {
     return Response.json({ ok: false, error: "Bank details not found — check the account number and bank." }, { status: 404 });
   }

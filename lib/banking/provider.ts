@@ -19,8 +19,19 @@ import { toKobo } from "../money";
 
 export type ProviderName = "monnify" | "bmoni";
 
-// A destination account, already name-enquiry verified.
-export type VerifiedAccount = { accountNumber: string; accountName: string; bankCode: string };
+// A destination account the provider answered about.
+//
+// `nameVerified` is false when the endpoint that produced `accountName` does
+// not actually perform name enquiry — BMONI's development host returns a
+// plausible name for any number against any bank. When it is false the name
+// must not be presented, or spoken, as confirmation of anything. See
+// lib/banking/name-enquiry.ts.
+export type VerifiedAccount = {
+  accountNumber: string;
+  accountName: string;
+  bankCode: string;
+  nameVerified: boolean;
+};
 
 // What a payout attempt is allowed to report. Mirrors proposal-status: there is
 // no "probably worked". An unknown answer must not become a spoken

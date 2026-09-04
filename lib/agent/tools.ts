@@ -477,7 +477,18 @@ export function makeTools(account: Account) {
         if (!name) {
           try {
             const { paymentProvider } = await import("../banking");
-            name = (await paymentProvider().verifyDestination(account.id, accountNumber, bankCode)).accountName;
+            const v = await paymentProvider().verifyDestination(account.id, accountNumber, bankCode);
+            if (!v.nameVerified) {
+              // Saving a fabricated name would launder it: next time it is
+              // recalled from our own database and looks like something the
+              // user once confirmed.
+              return {
+                ok: false,
+                message:
+                  "I could not confirm the account holder's name on this connection, so I will not save it under a name I cannot vouch for. Tell me the name to save it as and I will use that.",
+              };
+            }
+            name = v.accountName;
           } catch {
             return { ok: false, message: "Bank details not found — check the account number and bank." };
           }
@@ -489,7 +500,7 @@ export function makeTools(account: Account) {
 
     prepare_withdrawal: tool({
       description:
-        "Step 1 of 2 for a withdrawal from this user's own wallet. The destination can be: a new account (pass accountNumber + bankCode — it is verified by name enquiry), a saved beneficiary (pass beneficiaryName), or omitted to use their only/last saved destination. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read the amount and the verified account NAME back. Then: if mode is 'passphrase' (workers), tell them to say THEIR OWN security phrase to confirm — never say or guess it. If mode is 'word' (employers), give them the returned `phrase` word to say.",
+        "Step 1 of 2 for a withdrawal from this user's own wallet. The destination can be: a new account (pass accountNumber + bankCode), a saved beneficiary (pass beneficiaryName), or omitted to use their only/last saved destination. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read back the amount followed by the returned `destination` string VERBATIM — it already says the right thing about whether the account holder's name could be confirmed. When `nameVerified` is false the name is NOT trustworthy and you must never say it, in any form; `destination` reads the digits back instead. Then: if mode is 'passphrase' (workers), tell them to say THEIR OWN security phrase to confirm — never say or guess it. If mode is 'word' (employers), give them the returned `phrase` word to say.",
       parameters: z.object({
         amount: z.number().describe("amount in Naira to withdraw"),
         accountNumber: z.string().optional().describe("destination account number, for a new destination"),

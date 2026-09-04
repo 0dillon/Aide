@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReservedAccount, getReservedAccount } from "../monnify";
 import { paymentProvider, selectedProvider } from "../banking";
+import { destinationConfirmation, isFabricatedNameEnquiry } from "../banking/name-enquiry";
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
@@ -361,7 +362,10 @@ async function resolveDestination(
   accountId: string,
   dest: WithdrawalDestination | undefined,
   wallet: Wallet,
-): Promise<{ ok: true; account: string; bankCode: string; accountName: string; addedAt?: number } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; account: string; bankCode: string; accountName: string; nameVerified: boolean; addedAt?: number }
+  | { ok: false; message: string }
+> {
   if (dest?.accountNumber && dest?.bankCode) {
     try {
       // Through the seam: the bank CODES differ per provider, so verifying a
@@ -369,18 +373,37 @@ async function resolveDestination(
       // bank or none at all. This is the check that reads a real account
       // holder's name back before a worker approves the transfer.
       const r = await paymentProvider().verifyDestination(accountId, dest.accountNumber.trim(), dest.bankCode.trim());
-      return { ok: true, account: r.accountNumber, bankCode: dest.bankCode.trim(), accountName: r.accountName, addedAt: Date.now() };
+      return {
+        ok: true,
+        account: r.accountNumber,
+        bankCode: dest.bankCode.trim(),
+        accountName: r.accountName,
+        nameVerified: r.nameVerified,
+        addedAt: Date.now(),
+      };
     } catch {
       return { ok: false, message: "Bank details not found — check the account number and bank, then try again." };
     }
   }
+  // A saved beneficiary's name was captured by the same name enquiry. If that
+  // endpoint fabricates, the stored name is a fabrication that has merely been
+  // sitting in the database a while — age does not make it true.
+  const savedNamesTrustworthy = !isFabricatedNameEnquiry(selectedProvider(), process.env.BMONI_BASE_URL);
+
   const beneficiaries = await listBeneficiaries(accountId);
   if (dest?.beneficiaryName) {
     const q = dest.beneficiaryName.trim().toLowerCase();
     const matches = beneficiaries.filter((b) => b.accountName.toLowerCase().includes(q));
     if (matches.length === 1) {
       const b = matches[0];
-      return { ok: true, account: b.accountNumber, bankCode: b.bankCode, accountName: b.accountName, addedAt: b.at };
+      return {
+        ok: true,
+        account: b.accountNumber,
+        bankCode: b.bankCode,
+        accountName: b.accountName,
+        nameVerified: savedNamesTrustworthy,
+        addedAt: b.at,
+      };
     }
     if (matches.length > 1) {
       return { ok: false, message: `More than one saved beneficiary matches "${dest.beneficiaryName}" — say the full name.` };
@@ -389,14 +412,28 @@ async function resolveDestination(
   }
   if (beneficiaries.length === 1) {
     const b = beneficiaries[0];
-    return { ok: true, account: b.accountNumber, bankCode: b.bankCode, accountName: b.accountName, addedAt: b.at };
+    return {
+      ok: true,
+      account: b.accountNumber,
+      bankCode: b.bankCode,
+      accountName: b.accountName,
+      nameVerified: savedNamesTrustworthy,
+      addedAt: b.at,
+    };
   }
   if (beneficiaries.length > 1) {
     const names = beneficiaries.map((b) => b.accountName).join(", ");
     return { ok: false, message: `Which account should the money go to? Your saved beneficiaries are: ${names}. Or give a new account number and bank.` };
   }
   if (wallet.payoutAccount && wallet.payoutBankCode && wallet.payoutAccountName) {
-    return { ok: true, account: wallet.payoutAccount, bankCode: wallet.payoutBankCode, accountName: wallet.payoutAccountName, addedAt: wallet.payoutSetAt };
+    return {
+      ok: true,
+      account: wallet.payoutAccount,
+      bankCode: wallet.payoutBankCode,
+      accountName: wallet.payoutAccountName,
+      nameVerified: savedNamesTrustworthy,
+      addedAt: wallet.payoutSetAt,
+    };
   }
   return { ok: false, message: "No destination account. Give the account number and the bank the money should go to." };
 }
@@ -407,7 +444,22 @@ async function resolveDestination(
 // personal spoken security phrase (the accessible OTP replacement); employers
 // confirm with a per-withdrawal random word.
 export async function armWithdrawal(accountId: string, amount: number, dest?: WithdrawalDestination): Promise<
-  | { ok: true; amount: number; accountName: string; account: string; mode: "word" | "passphrase"; phrase?: string }
+  | {
+      ok: true;
+      amount: number;
+      accountName: string;
+      account: string;
+      // False when the provider's name enquiry fabricates. The caller must not
+      // present or speak `accountName` as confirmation; `destination` is what
+      // to say instead.
+      nameVerified: boolean;
+      // The one line Aide reads before the money moves, already correct for
+      // whether the name means anything. Built here so the voice path and the
+      // screen path cannot drift apart on the single sentence that matters.
+      destination: string;
+      mode: "word" | "passphrase";
+      phrase?: string;
+    }
   | { ok: false; message: string; needsSecurityPhrase?: boolean }
 > {
   const w = await getWallet(accountId);
@@ -466,6 +518,12 @@ export async function armWithdrawal(accountId: string, amount: number, dest?: Wi
     amount,
     accountName: resolved.accountName,
     account: resolved.account,
+    nameVerified: resolved.nameVerified,
+    destination: destinationConfirmation({
+      accountName: resolved.accountName,
+      accountNumber: resolved.account,
+      nameVerified: resolved.nameVerified,
+    }),
     mode,
     // The random word is only revealed for word mode; a worker's security
     // phrase is theirs and is never echoed back.

@@ -59,7 +59,10 @@ const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 type Validation =
   | { status: "idle" }
   | { status: "checking" }
-  | { status: "ok"; accountName: string }
+  // `accountName` is absent when the provider's name enquiry could not be
+  // believed. Not an error — the account number was accepted — but there is no
+  // name to show, and showing one would be the whole problem.
+  | { status: "ok"; accountName?: string }
   | { status: "fail"; message: string };
 
 export default function PaymentsPage() {
@@ -100,7 +103,17 @@ export default function PaymentsPage() {
 
   // Withdrawal flow
   const [amount, setAmount] = useState("");
-  const [armed, setArmed] = useState<{ amount: number; accountName: string; mode: "word" | "passphrase"; phrase?: string } | null>(null);
+  // `destination` is built server-side and already says the right thing about
+  // whether the account holder's name could be confirmed. The screen and the
+  // spoken path use the same string so they cannot disagree.
+  const [armed, setArmed] = useState<{
+    amount: number;
+    accountName: string;
+    destination: string;
+    nameVerified: boolean;
+    mode: "word" | "passphrase";
+    phrase?: string;
+  } | null>(null);
   const [confirmWord, setConfirmWord] = useState("");
   const [moving, setMoving] = useState(false);
   const movingRef = useRef(false);
@@ -191,7 +204,7 @@ export default function PaymentsPage() {
         });
         const data = await res.json().catch(() => null);
         if (validateSeq.current !== seq) return;
-        if (res.ok && data?.accountName) setValidation({ status: "ok", accountName: data.accountName });
+        if (res.ok) setValidation({ status: "ok", accountName: data?.accountName });
         else setValidation({ status: "fail", message: data?.error || "Bank details not found — check the account number and bank." });
       } catch {
         if (validateSeq.current === seq) setValidation({ status: "fail", message: "Could not reach the bank verification service." });
@@ -288,17 +301,29 @@ export default function PaymentsPage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not prepare the withdrawal.");
-      setArmed({ amount: data.amount, accountName: data.accountName, mode: data.mode, phrase: data.phrase });
+      setArmed({
+        amount: data.amount,
+        accountName: data.accountName,
+        destination: data.destination,
+        nameVerified: data.nameVerified,
+        mode: data.mode,
+        phrase: data.phrase,
+      });
       setConfirmWord("");
       // Aide now waits for the confirmation — spoken aloud, hands-free.
       beginCapture((word) => {
         setConfirmWord(word);
         confirmWith(word);
       });
+      // `destination` comes from the server already knowing whether the
+      // account holder's name means anything. When it does not, this reads the
+      // digits back one at a time instead of naming a person the provider
+      // invented — which is the only check available to someone who cannot see
+      // the number they typed.
       speak(
         data.mode === "passphrase"
-          ? `You are sending ${data.amount} naira to ${data.accountName}. To confirm, say your security phrase.`
-          : `You are sending ${data.amount} naira to ${data.accountName}. To confirm, say the word: ${data.phrase}.`,
+          ? `You are sending ${data.amount} naira ${data.destination}. To confirm, say your security phrase.`
+          : `You are sending ${data.amount} naira ${data.destination}. To confirm, say the word: ${data.phrase}.`,
       );
     } catch (e) {
       setError((e as Error).message);
@@ -531,7 +556,18 @@ export default function PaymentsPage() {
                 {/* Inline validation status — right under the fields, spoken-friendly */}
                 <p aria-live="polite" className="w-full font-bold">
                   {validation.status === "checking" && <span className="text-[var(--ink-soft)]">Checking account…</span>}
-                  {validation.status === "ok" && <span className="text-[var(--good)]">✓ Account found: {validation.accountName}</span>}
+                  {validation.status === "ok" &&
+                    (validation.accountName ? (
+                      <span className="text-[var(--good)]">✓ Account found: {validation.accountName}</span>
+                    ) : (
+                      // Deliberately not a green tick. The number was accepted,
+                      // but nothing about the account holder was confirmed, and
+                      // a tick here is read as "checked".
+                      <span className="text-[var(--warn-ink)]">
+                        Account number accepted. I could not confirm the account holder&rsquo;s name on this
+                        connection — check the digits yourself before sending.
+                      </span>
+                    ))}
                   {validation.status === "fail" && <span className="text-[var(--alert)]">✗ {validation.message}</span>}
                   {validation.status === "idle" && acct.length > 0 && acct.length < 10 && (
                     <span className="text-[var(--ink-soft)]">Enter the full 10-digit account number.</span>
@@ -566,7 +602,7 @@ export default function PaymentsPage() {
         ) : (
           <div className="mt-4 rounded-lg p-5" style={{ background: "var(--warn-bg)", color: "var(--warn-ink)" }}>
             <p className="text-lg font-bold">
-              Confirm: send {naira(armed.amount)} to {armed.accountName}?
+              Confirm: send {naira(armed.amount)} {armed.destination}?
             </p>
             {armed.mode === "passphrase" ? (
               <p className="mt-2 text-lg">

@@ -6,6 +6,7 @@ import {
   parseCreatedWallet,
   parseNgnBalanceKobo,
   parseNgnDepositAccount,
+  soleNgnWalletIndex,
 } from "../../lib/banking/bmoni-shapes";
 
 // Every payload in this file was captured from the live BMONI sandbox at
@@ -116,6 +117,58 @@ describe("GET /v1/users/{id}/smart-wallets/account/balances", () => {
   });
 });
 
+describe("the ngnWalletIndex that start-nigeria demands", () => {
+  // POST …/onboarding/start-nigeria answers 400 with all three required fields
+  // when any is missing, captured live on 2026-09-04:
+  //
+  //   ["bvn must be a string", "ngnWalletAddress must be a string",
+  //    "ngnWalletIndex must be a number conforming to the specified constraints"]
+  //
+  // The client only ever sent two of them, so the Nigerian rail never started,
+  // so no virtual account was ever issued, so the deposit list held nothing but
+  // BMONI's pooled house account — and the payments page showed the stale
+  // Monnify NUBAN instead. One unsent integer, four symptoms.
+  //
+  // Nothing in any response carries the index. No endpoint returns it: not the
+  // wallet, not the balances entry, not the user. So it is DERIVED, and the
+  // only derivation that cannot be quietly wrong is the one below.
+  const oneWallet = {
+    smartAccountAddress: "0xbb7EF869d8A6451a721cCdB6816405d27Bd529F4",
+    balances: [{ smartWalletId: "ce91a25e-694b-4bc7-8810-349c4b912f18", currency: "NGN", balance: "0", error: null }],
+  };
+
+  it("is 0 for the one wallet Aide provisions", () => {
+    // Verified against the sandbox: index 0 with this exact wallet returned
+    // 200 and the anchor rail went from not_started to active.
+    expect(soleNgnWalletIndex(oneWallet, "ce91a25e-694b-4bc7-8810-349c4b912f18")).toBe(0);
+  });
+
+  it("refuses when the wallet being onboarded is not the one BMONI lists", () => {
+    // Would otherwise hand back 0 and onboard somebody else's wallet under
+    // this worker's BVN.
+    expect(() => soleNgnWalletIndex(oneWallet, "00000000-0000-0000-0000-000000000000")).toThrow(/does not list/i);
+  });
+
+  it("refuses to pick an index when the user has more than one wallet", () => {
+    // Position in this array is a GUESS, not a documented mapping — BMONI
+    // never states whether its index counts every wallet or only the NGN ones.
+    // A wrong index points a worker's incoming wages at a wallet Aide does not
+    // read, and the money arrives somewhere real, so nothing errors. Refusing
+    // is the only honest answer, and it cannot happen in practice: Aide creates
+    // exactly one wallet per user and provisioning already refuses to make a
+    // second.
+    const two = {
+      ...oneWallet,
+      balances: [...oneWallet.balances, { smartWalletId: "aaaaaaaa-0000-0000-0000-000000000000", currency: "NGN", balance: "0", error: null }],
+    };
+    expect(() => soleNgnWalletIndex(two, "ce91a25e-694b-4bc7-8810-349c4b912f18")).toThrow(/refusing to guess/i);
+  });
+
+  it("refuses on an empty wallet list rather than defaulting to 0", () => {
+    expect(() => soleNgnWalletIndex({ ...oneWallet, balances: [] }, "ce91a25e")).toThrow(/does not list/i);
+  });
+});
+
 describe("GET /v1/users/{id}/bank-accounts/deposit-accounts/NGN", () => {
   // Before the per-user virtual account is provisioned, BMONI answers 200 with
   // a POOLED house account — Bkey Limited's own, shared by every user on the
@@ -149,6 +202,7 @@ describe("GET /v1/users/{id}/bank-accounts/deposit-accounts/NGN", () => {
 
   it("picks the worker's own account out of a list that also holds the pooled one", () => {
     expect(parseNgnDepositAccount({ accounts: [own, ...pooled.accounts] })).toEqual({
+      id: "143d061f-e98d-4ce1-b933-139176963dbb",
       accountNumber: "4534076021",
       bankName: "PROVIDUS BANK",
       accountName: "Dillon Bunch",
@@ -193,6 +247,8 @@ describe("GET /v1/users/{id}/bank-accounts/deposit-accounts/NGN", () => {
       ],
     };
     expect(parseNgnDepositAccount(own)).toEqual({
+      // Carried because onramp/vba/nigeria needs it to route deposits.
+      id: "3f0a1e5c-4d2b-4a8e-9c11-7b6d5e8a2f34",
       accountNumber: "8012345678",
       bankName: "9 Payment Service Bank",
       accountName: "Aide Demo Worker",

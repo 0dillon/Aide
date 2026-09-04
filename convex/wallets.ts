@@ -71,11 +71,13 @@ export const setProvisioned = mutation({
     // Optional so the Monnify path, which has no separate bank-held name,
     // still calls this unchanged.
     accountName: v.optional(v.string()),
+    provider: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const w = await walletDoc(ctx, a.accountId);
     const patch = {
       status: "active" as const,
+      provider: a.provider,
       accountNumber: a.accountNumber,
       bankName: a.bankName,
       accountName: a.accountName,
@@ -347,7 +349,14 @@ export const saveBeneficiary = mutation({
 // --- Withdrawal ledger (audit trail; makes balances honest) ---
 
 export const recordWithdrawal = mutation({
-  args: { accountId: v.string(), amountKobo: v.number(), accountName: v.string(), status: v.string(), at: v.number() },
+  args: {
+    accountId: v.string(),
+    amountKobo: v.number(),
+    accountName: v.string(),
+    status: v.string(),
+    at: v.number(),
+    provider: v.optional(v.string()),
+  },
   handler: async (ctx, a) => {
     // `amount` is written too, in naira, so a rollback to the previous deploy
     // still reads a correct figure rather than one a hundred times too big.
@@ -355,10 +364,28 @@ export const recordWithdrawal = mutation({
   },
 });
 
+// Scoped to one provider. Rows made through a provider this deployment no
+// longer talks to are stuck at whatever status they had when the switch
+// happened — "processing", for ever — and Aide reads this list ALOUD. A worker
+// asking what they have sent would otherwise hear old transfers to names they
+// may not recognise, described as still in flight, with no screen on which to
+// notice the dates.
+//
+// Rows with no provider recorded are Monnify's: the field did not exist until
+// BMONI arrived. Filtered in the handler rather than the index because the
+// stored value is absent, not "monnify", so there is nothing to match on.
 export const listWithdrawals = query({
-  args: { accountId: v.string() },
-  handler: async (ctx, { accountId }) =>
-    (await ctx.db.query("withdrawals").withIndex("by_account", (q) => q.eq("accountId", accountId)).collect()).sort((a, b) => b.at - a.at),
+  args: { accountId: v.string(), provider: v.optional(v.string()) },
+  handler: async (ctx, { accountId, provider }) => {
+    const rows = await ctx.db
+      .query("withdrawals")
+      .withIndex("by_account", (q) => q.eq("accountId", accountId))
+      .collect();
+    const live = provider
+      ? rows.filter((r) => (r.provider ?? "monnify") === provider)
+      : rows;
+    return live.sort((a, b) => b.at - a.at);
+  },
 });
 
 // Total already withdrawn in KOBO (excludes FAILED) — the debit side of

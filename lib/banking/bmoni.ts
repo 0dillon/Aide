@@ -2,7 +2,14 @@ import { bmoniMove, bmoniRead, BmoniError } from "./bmoni-client";
 import { koboToDecimalString } from "./amounts";
 import { parseCards } from "./bmoni-cards";
 import { parseVerifiedAccount, parseWalletTransactions } from "./bmoni-shapes";
-import { parseBanks, parseCreatedUser, parseCreatedWallet, parseNgnBalanceKobo, parseNgnDepositAccount } from "./bmoni-shapes";
+import {
+  parseBanks,
+  parseCreatedUser,
+  parseCreatedWallet,
+  parseNgnBalanceKobo,
+  parseNgnDepositAccount,
+  soleNgnWalletIndex,
+} from "./bmoni-shapes";
 
 // The BMONI Embedded operations Aide uses, in lifecycle order:
 //
@@ -94,15 +101,22 @@ export async function startNigeriaOnboarding(args: {
   userId: string;
   bvn: string;
   ngnWalletAddress: string;
+  smartWalletId: string;
 }): Promise<unknown> {
   // BMONI rejects a BVN that is not exactly 11 digits, but only after a round
   // trip. Checking here keeps the error next to the field that caused it.
   const bvn = args.bvn.trim();
   if (!/^\d{11}$/.test(bvn)) throw new Error(`BVN must be exactly 11 digits, got ${JSON.stringify(args.bvn)}`);
+
+  // Read rather than accepted from the caller: no caller has any way to know
+  // this number, and the one that invented it would invent it wrong. See
+  // soleNgnWalletIndex for why it refuses rather than picking.
+  const ngnWalletIndex = soleNgnWalletIndex(await listBalances(args.userId), args.smartWalletId);
+
   return await bmoniRead({
     path: `/v1/users/${args.userId}/onboarding/start-nigeria`,
     method: "POST",
-    body: { bvn, ngnWalletAddress: args.ngnWalletAddress },
+    body: { bvn, ngnWalletAddress: args.ngnWalletAddress, ngnWalletIndex },
   });
 }
 
@@ -150,7 +164,7 @@ export async function pointDepositsAtWallet(
 }
 
 // The account number a worker actually gives out to be paid into.
-export async function getNgnDepositAccount(userId: string): Promise<{ accountNumber: string; bankName: string; accountName: string }> {
+export async function getNgnDepositAccount(userId: string): Promise<{ id: string; accountNumber: string; bankName: string; accountName: string }> {
   return parseNgnDepositAccount(await bmoniRead({ path: `/v1/users/${userId}/bank-accounts/deposit-accounts/NGN` }));
 }
 

@@ -50,6 +50,7 @@ type WalletDoc = {
   accountId: string;
   accountReference: string;
   status: "unprovisioned" | "active" | "failed";
+  provider?: string;
   accountNumber?: string;
   bankName?: string;
   accountName?: string;
@@ -90,6 +91,7 @@ function toWallet(d: WalletDoc): Wallet {
     accountId: d.accountId,
     accountReference: d.accountReference,
     status: d.status,
+    provider: d.provider,
     accountNumber: d.accountNumber,
     bankName: d.bankName,
     accountName: d.accountName,
@@ -130,7 +132,15 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
 
   const p = (async () => {
     const wallet = await getWallet(accountId);
-    if (wallet.status === "active") return wallet;
+    // Active is not enough — it has to be active for the provider that is
+    // LIVE. A wallet Monnify provisioned satisfies `status === "active"`
+    // forever, so returning here left switched deployments permanently
+    // half-migrated: the old NUBAN still on screen, no BMONI user ever
+    // created, and every BMONI call failing on an account that looked healthy.
+    //
+    // A row with no recorded provider is Monnify's; that is all there was when
+    // those rows were written.
+    if (wallet.status === "active" && (wallet.provider ?? "monnify") === selectedProvider()) return wallet;
 
     // BMONI provisions through its own multi-step lifecycle (user → wallet →
     // onboarding → virtual account), so the seam owns it. Only Monnify's
@@ -144,8 +154,23 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
         // active would have Aide read out a blank where a NUBAN should be.
         throw new Error(`${selectedProvider()} returned no receiving account for ${accountId}`);
       }
-      await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName, accountName });
-      return { ...wallet, status: "active" as const, accountNumber, bankName, accountName, lastError: undefined };
+      await convexClient().mutation(api.wallets.setProvisioned, {
+        accountId,
+        accountReference: ref,
+        accountNumber,
+        bankName,
+        accountName,
+        provider: selectedProvider(),
+      });
+      return {
+        ...wallet,
+        status: "active" as const,
+        provider: selectedProvider(),
+        accountNumber,
+        bankName,
+        accountName,
+        lastError: undefined,
+      };
     }
 
     const acc = await getAccount(accountId);
@@ -165,8 +190,8 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
     }
     const accountNumber = reserved.accounts[0].accountNumber;
     const bankName = reserved.accounts[0].bankName;
-    await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName });
-    return { ...wallet, status: "active" as const, accountNumber, bankName, lastError: undefined };
+    await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName, provider: "monnify" });
+    return { ...wallet, status: "active" as const, provider: "monnify", accountNumber, bankName, lastError: undefined };
   })();
 
   inFlight.set(
@@ -268,12 +293,25 @@ export async function getBalance(accountId: string): Promise<{ balance: number; 
 
 export async function recordWithdrawal(accountId: string, r: Omit<WithdrawalRecord, "at" | "accountId">): Promise<void> {
   // r.amount is naira at this boundary; the ledger stores whole kobo.
-  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amountKobo: toKobo(r.amount), accountName: r.accountName, status: r.status, at: Date.now() });
+  await convexClient().mutation(api.wallets.recordWithdrawal, {
+    accountId,
+    amountKobo: toKobo(r.amount),
+    accountName: r.accountName,
+    status: r.status,
+    at: Date.now(),
+    // Stamped at write time. A row that does not name the provider that moved
+    // the money is indistinguishable from a Monnify-era one, and the next
+    // switch would hide a real payout instead of a stranded one.
+    provider: selectedProvider(),
+  });
   balanceCache.delete(accountId); // money left — never serve a stale total
 }
 
 export async function getWithdrawals(accountId: string): Promise<WithdrawalRecord[]> {
-  const rows = (await convexClient().query(api.wallets.listWithdrawals, { accountId })) as WithdrawalRecord[];
+  const rows = (await convexClient().query(api.wallets.listWithdrawals, {
+    accountId,
+    provider: selectedProvider(),
+  })) as WithdrawalRecord[];
   return rows.map((r) => ({ accountId: r.accountId, amount: r.amount, accountName: r.accountName, status: r.status, at: r.at }));
 }
 

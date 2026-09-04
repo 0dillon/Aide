@@ -59,6 +59,14 @@ export default defineSchema({
     accountId: v.string(),
     accountReference: v.string(),
     status: v.union(v.literal("unprovisioned"), v.literal("active"), v.literal("failed")),
+    // Which provider provisioned this wallet. A row without one predates the
+    // field and is Monnify's, because Monnify is all there was.
+    //
+    // This is what makes "active" mean anything after a provider switch:
+    // without it, a wallet Monnify provisioned looks finished forever, so it
+    // is never given a BMONI wallet and every BMONI call fails on an account
+    // that appears perfectly healthy.
+    provider: v.optional(v.string()),
     accountNumber: v.optional(v.string()),
     bankName: v.optional(v.string()),
     // The name the BANK holds for this account. Not the Aide profile name —
@@ -149,6 +157,11 @@ export default defineSchema({
     accountName: v.string(),
     status: v.string(),
     at: v.number(),
+    // Who actually moved the money. Absent means Monnify: every row written
+    // before this field existed was theirs, and a Monnify reference can never
+    // advance once the deployment has switched — so those rows sit at
+    // "processing" for ever and must not be read out as money still in flight.
+    provider: v.optional(v.string()),
   }).index("by_account", ["accountId"]),
 
   // Saved withdrawal destinations ("beneficiaries"), per account. Offered for

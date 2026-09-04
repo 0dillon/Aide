@@ -686,7 +686,7 @@ export default function PaymentsPage() {
 
         <h3 className="mt-6 text-lg font-bold">Money out</h3>
         {!history || history.outbound.length === 0 ? (
-          <p className="mt-1 text-[var(--ink-soft)]">No withdrawals yet.</p>
+          <p className="mt-1 text-[var(--ink-soft)]">No money sent out yet.</p>
         ) : (
           <ul className="mt-2 divide-y divide-[var(--line)]">
             {history.outbound.map((w, i) => (

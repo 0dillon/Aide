@@ -75,6 +75,44 @@ export function parseNgnBalanceKobo(body: unknown): number {
   return toKobo(naira);
 }
 
+// ---- the ngnWalletIndex start-nigeria demands -------------------------------
+
+// POST …/onboarding/start-nigeria requires THREE fields — bvn, ngnWalletAddress
+// and ngnWalletIndex — and answers 400 listing all of them when any is missing.
+// The client sent two, so the rail never started, so no virtual account was
+// ever issued, so the deposit list held only BMONI's pooled house account.
+//
+// No response anywhere carries the index: not the wallet, not the balances
+// entry, not the user record. It has to be derived, and the derivation is
+// deliberately narrow. Aide provisions exactly one smart wallet per user, so
+// when BMONI lists exactly one and it is ours, 0 is the only value that can be
+// right — verified live, the anchor rail went not_started → active.
+//
+// With more than one wallet, position in the array is a guess: BMONI never says
+// whether its index counts every wallet or only the NGN ones. Guessing wrong
+// points a worker's incoming wages at a wallet Aide does not read, and the
+// money lands somewhere real, so nothing anywhere reports an error. So this
+// throws instead.
+export function soleNgnWalletIndex(body: unknown, smartWalletId: string): number {
+  const list = obj(body).balances;
+  if (!Array.isArray(list)) throw new Error("BMONI balances response has no balances array");
+
+  const i = list.map(obj).findIndex((b) => b.smartWalletId === smartWalletId);
+  if (i < 0) {
+    throw new Error(
+      `BMONI does not list smart wallet ${smartWalletId} for this user, so its onboarding index cannot be derived`,
+    );
+  }
+  if (list.length > 1) {
+    throw new Error(
+      `BMONI lists ${list.length} smart wallets for this user. Which one its ngnWalletIndex counts is ` +
+        `undocumented, and onboarding the wrong index routes incoming wages to a wallet Aide cannot read. ` +
+        `Refusing to guess.`,
+    );
+  }
+  return i;
+}
+
 // ---- GET …/bank-accounts/deposit-accounts/NGN -------------------------------
 
 // Bkey's own house account, returned to users who have no virtual account of
@@ -83,7 +121,7 @@ export function parseNgnBalanceKobo(body: unknown): number {
 const POOLED_ID = /^pooled-/i;
 const POOLED_NAME = /bkey/i;
 
-export function parseNgnDepositAccount(body: unknown): { accountNumber: string; bankName: string; accountName: string } {
+export function parseNgnDepositAccount(body: unknown): { id: string; accountNumber: string; bankName: string; accountName: string } {
   const list = obj(body).accounts;
   if (!Array.isArray(list) || list.length === 0) {
     throw new Error("BMONI returned no naira deposit account for this user");
@@ -112,6 +150,8 @@ export function parseNgnDepositAccount(body: unknown): { accountNumber: string; 
   }
   const a = own[0];
   return {
+    // Needed to point deposits at the wallet; onramp/vba/nigeria takes this id.
+    id: str(a.id, "accounts[].id"),
     accountNumber: str(a.accountNumber, "accounts[].accountNumber"),
     bankName: str(a.bankName, "accounts[].bankName"),
     // The name the BANK holds for this account, which is NOT the Aide profile

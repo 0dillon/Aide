@@ -102,9 +102,27 @@ export const seedDefaults = mutation({
       // the only moment we know the persona details. Existing values are never
       // overwritten — a real user who filled these in keeps what they entered.
       const patch: Record<string, unknown> = {};
-      for (const k of ["firstName", "lastName", "phoneNumber", "bvn"] as const) {
+      // `email` is here for the same reason as the rest: BMONI refuses to
+      // create a user without one, and the seeded employer never carried one,
+      // so that account could not be provisioned at all.
+      for (const k of ["firstName", "lastName", "phoneNumber", "bvn", "email"] as const) {
         if (a[k] && !existing[k]) patch[k] = a[k];
       }
+      // One targeted overwrite. The two documented sandbox persona numbers are
+      // registered to other teams on the shared BMONI sandbox, so a user
+      // created with either gets "409 User already exists with this
+      // phoneNumber" and provisioning stops for good. They are known-unusable
+      // rather than merely stale, which is why replacing them is safe where
+      // overwriting any other stored number would not be.
+      if (a.phoneNumber && (existing.phoneNumber === "+2348000000000" || existing.phoneNumber === "+2348000000001")) {
+        patch.phoneNumber = a.phoneNumber;
+      }
+      // Same shape of exception, for the same kind of value. The demo worker
+      // was renamed to the sandbox persona whose BVN actually resolves, so a
+      // row still reading "Aide Demo Worker" is a stale placeholder of ours —
+      // not something a person chose. Matching the literal old string keeps
+      // this from touching any name anyone typed.
+      if (a.name && existing.name === "Aide Demo Worker") patch.name = a.name;
       if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
     }
   },

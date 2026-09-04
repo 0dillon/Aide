@@ -148,8 +148,11 @@ export async function provisionBmoniWallet(
   // second wallet. If one may already exist, read balances first and refuse
   // rather than guessing.
   if (existing?.bmoniUserId && !existing.bmoniSmartWalletId) {
-    const balances = await listBalances(bmoniUserId);
-    if (hasWallet(balances)) {
+    const outcome = await listBalances(bmoniUserId).then(
+      (body) => ({ ok: true as const, body }),
+      (e: Error) => ({ ok: false as const, message: e.message }),
+    );
+    if (walletAlreadyExists(outcome)) {
       throw new Error(
         `BMONI already reports a wallet for ${accountId} but none is recorded locally. Creating another ` +
           `would leave two wallets and deposits routed to the wrong one. Recover the smartWalletId manually.`,
@@ -178,13 +181,30 @@ export async function provisionBmoniWallet(
   return { bmoniUserId, smartWalletId: wallet.smartWalletId, walletAddress: wallet.address };
 }
 
-// Deliberately conservative: anything that looks like a wallet counts. This
-// gates "may I create another", so a false positive costs a manual check and a
-// false negative costs a duplicate wallet.
-function hasWallet(balances: unknown): boolean {
-  if (!balances) return false;
-  const list = Array.isArray(balances) ? balances : (balances as any)?.wallets ?? (balances as any)?.balances;
-  return Array.isArray(list) && list.length > 0;
+// BMONI's way of saying "this user has no wallet yet" — an HTTP 400 from the
+// balances endpoint, which is the normal state of a user about to be given
+// their first one.
+const NO_WALLET_YET = /no embedded smart wallet group found/i;
+
+// Whether a wallet already exists, from either a balances response or the
+// error that came back instead.
+//
+// Deliberately asymmetric. `false` unlocks wallet creation, which has no
+// uniqueness guard at BMONI — a wrong `false` makes a SECOND wallet and
+// deposits then route to whichever one we did not record. So `false` is
+// returned ONLY on positive evidence: an empty balance list, or the specific
+// 400 that names the absent wallet group. Anything else — a timeout, a 500, a
+// body in a shape we do not recognise — is "cannot tell", and cannot-tell
+// resolves to "yes, one exists" so the caller stops and a human looks.
+export function walletAlreadyExists(
+  outcome: { ok: true; body: unknown } | { ok: false; message: string },
+): boolean {
+  if (!outcome.ok) return !NO_WALLET_YET.test(outcome.message);
+  const body = outcome.body as { wallets?: unknown; balances?: unknown } | null;
+  if (!body) return true;
+  const list = Array.isArray(body) ? body : (body.wallets ?? body.balances);
+  if (!Array.isArray(list)) return true;
+  return list.length > 0;
 }
 
 // Activate the NGN rail and point incoming bank transfers at the wallet.
@@ -204,6 +224,7 @@ export async function activateNigeriaRail(args: {
     userId: args.bmoniUserId,
     bvn: args.bvn,
     ngnWalletAddress: args.walletAddress,
+    smartWalletId: args.smartWalletId,
   });
   await pointDepositsAtWallet(args.bmoniUserId, args.smartWalletId, args.bankAccountId);
 }

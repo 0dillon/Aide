@@ -51,6 +51,10 @@ beforeEach(async () => {
     "wallets:getByAccount": () => ({
       ...walletDoc(),
       status: "active",
+      // Provisioned BY BMONI. Without this the wallet reads as a Monnify-era
+      // row and ensureWallet correctly re-provisions it before reading a
+      // balance — see tests/money/wallet-provider-switch.test.ts.
+      provider: "bmoni",
       accountNumber: "4534076021",
       bankName: "PROVIDUS BANK",
       bmoniUserId: "54db4056-620d-4aae-8205-88cb1b6483c8",

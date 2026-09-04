@@ -1,6 +1,7 @@
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { worker } from "./state";
+import { currentDeployment, personaPhone } from "./persona-phone";
 
 // The two BMONI sandbox personas. Only these BVNs resolve, so the demo worker
 // and demo employer ARE these people — the names on the payments page, the
@@ -15,17 +16,19 @@ import { worker } from "./state";
 // with "The email address on your account is invalid" for made-up ones like
 // @aide.test, and it says so only at the card step — long after the account
 // looks fine.
+// The phone numbers are DERIVED, not the documented persona ones. BMONI
+// enforces global uniqueness on phoneNumber across every team on the shared
+// sandbox, so +2348000000000 and +2348000000001 are long since taken — and the
+// phone is not what identity matching uses. See lib/store/persona-phone.ts.
 const PERSONAS = {
   worker: {
     firstName: "Bunch",
     lastName: "Dillon",
-    phoneNumber: "+2348000000000",
     bvn: "95888168924",
   },
   employer: {
     firstName: "Samson",
     lastName: "Jabo",
-    phoneNumber: "+2348000000001",
     bvn: "22222222222",
   },
 } as const;
@@ -53,15 +56,20 @@ export function ensureSeeded(): Promise<void> {
             bio: worker.bio,
             createdAt: Date.now(),
             ...PERSONAS.worker,
+            phoneNumber: personaPhone(worker.id, currentDeployment()),
           },
           {
             key: "demo-employer",
             name: "ClearVoice Media",
             role: "employer" as const,
+            // BMONI will not create a user without one, and an employer with no
+            // BMONI user cannot pay anybody.
+            email: "aide-demo-employer@aide.test",
             skills: [],
             bio: "",
             createdAt: Date.now(),
             ...PERSONAS.employer,
+            phoneNumber: personaPhone("demo-employer", currentDeployment()),
           },
         ],
       })

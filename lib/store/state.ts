@@ -122,6 +122,9 @@ export type Wallet = {
   accountId: string;
   accountReference: string;
   status: "unprovisioned" | "active" | "failed";
+  // Which provider provisioned it. Absent on rows written before the field,
+  // which are Monnify's.
+  provider?: string;
   accountNumber?: string;
   bankName?: string;
   // The name the bank holds for this account. Distinct from the profile name.

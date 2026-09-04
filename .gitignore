@@ -34,3 +34,4 @@ venv/
 # Python bytecode from the TTS worker / speak function
 __pycache__/
 *.pyc
+.aide-local/

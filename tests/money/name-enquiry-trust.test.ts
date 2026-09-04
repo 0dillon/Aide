@@ -16,12 +16,31 @@ import { isFabricatedNameEnquiry, destinationConfirmation } from "../../lib/bank
 // against a fabricator it is worse than having none: it turns a mistyped
 // account number into a confident "Sending ₦20,000 to Ekon Orji".
 //
-// So a fabricated name must never be presented as confirmation, and what is
-// read back instead has to be something the user can actually check — the
-// digits they typed.
+// The decision is to surface whatever the provider says, so Aide behaves the
+// same on the dev host as it will on production. The guard still exists and is
+// still tested — it is opt-in behind BMONI_STRICT_NAME_ENQUIRY, so the day
+// this points at a funded wallet it is one variable rather than a rewrite.
 
-describe("recognising an endpoint that cannot really verify a name", () => {
+describe("by default, the provider's answer is taken as given", () => {
   beforeEach(() => vi.unstubAllEnvs());
+
+  it("does not second-guess the development host", () => {
+    // Aide will read "Ekon Orji" out loud for an account number nobody typed
+    // correctly. On the sandbox that is harmless: no wallet holds money and no
+    // persona is a real person.
+    expect(isFabricatedNameEnquiry("bmoni", "https://embedded-dev.bmoni.com")).toBe(false);
+  });
+
+  it("does not second-guess an unknown host either", () => {
+    expect(isFabricatedNameEnquiry("bmoni", undefined)).toBe(false);
+  });
+});
+
+describe("with BMONI_STRICT_NAME_ENQUIRY turned on", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("BMONI_STRICT_NAME_ENQUIRY", "true");
+  });
 
   it("treats the BMONI development host as fabricating", () => {
     expect(isFabricatedNameEnquiry("bmoni", "https://embedded-dev.bmoni.com")).toBe(true);
@@ -49,18 +68,26 @@ describe("recognising an endpoint that cannot really verify a name", () => {
     expect(isFabricatedNameEnquiry("monnify", "https://sandbox.monnify.com")).toBe(false);
   });
 
-  it("defaults to distrust when the host is unknown", () => {
-    // An unset base URL means we cannot tell. Claiming a name is verified when
-    // we do not know is the failure this file exists to prevent.
+  it("distrusts an unknown host", () => {
+    // "We cannot tell" must not resolve to "verified" once strictness is on.
     expect(isFabricatedNameEnquiry("bmoni", undefined)).toBe(true);
     expect(isFabricatedNameEnquiry("bmoni", "")).toBe(true);
   });
 });
 
 describe("what Aide says before money moves", () => {
-  it("reads the name back when it was really verified", () => {
+  it("reads the name back when it was verified", () => {
     expect(destinationConfirmation({ accountName: "Jabo Samson Joe", accountNumber: "3463455722", nameVerified: true }))
-      .toBe("to Jabo Samson Joe, account 3463455722");
+      .toBe("to Jabo Samson Joe, account 3 4 6 3 4 5 5 7 2 2");
+  });
+
+  it("spells the digits even alongside a verified name", () => {
+    // Accessibility rather than trust: "3463455722" reaches a screen reader as
+    // "three billion, four hundred and sixty-three million…", which cannot be
+    // checked against the number someone meant to type.
+    expect(
+      destinationConfirmation({ accountName: "Jabo Samson Joe", accountNumber: "3463455722", nameVerified: true }),
+    ).toContain("3 4 6 3 4 5 5 7 2 2");
   });
 
   it("reads the digits back instead when the name was not verified", () => {

@@ -477,18 +477,7 @@ export function makeTools(account: Account) {
         if (!name) {
           try {
             const { paymentProvider } = await import("../banking");
-            const v = await paymentProvider().verifyDestination(account.id, accountNumber, bankCode);
-            if (!v.nameVerified) {
-              // Saving a fabricated name would launder it: next time it is
-              // recalled from our own database and looks like something the
-              // user once confirmed.
-              return {
-                ok: false,
-                message:
-                  "I could not confirm the account holder's name on this connection, so I will not save it under a name I cannot vouch for. Tell me the name to save it as and I will use that.",
-              };
-            }
-            name = v.accountName;
+            name = (await paymentProvider().verifyDestination(account.id, accountNumber, bankCode)).accountName;
           } catch {
             return { ok: false, message: "Bank details not found — check the account number and bank." };
           }

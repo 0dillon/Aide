@@ -124,3 +124,43 @@ export function parseBanks(body: unknown): Array<{ name: string; code: string }>
   if (!Array.isArray(list)) throw new Error("BMONI nigerian-banks response has no banks array");
   return list.map(obj).map((b) => ({ name: str(b.bankName, "banks[].bankName"), code: str(b.bankCode, "banks[].bankCode") }));
 }
+
+// ---- GET …/smart-wallets/{smartWalletId}/transactions -----------------------
+
+// The wallet's own history. The envelope is verified — `transactions` plus
+// page/perPage/total/pageCount/hasNextPage/hasPreviousPage — but no wallet on
+// the shared sandbox has a transaction yet, so the ITEM field names below come
+// from the SDK's EmbeddedWalletTransaction model, not from observed JSON.
+//
+// Hence: throw on an item that cannot be read, never skip it. A skipped row is
+// a payment a worker is never told about, and they have no screen on which to
+// notice the list is short.
+export type WalletCredit = { amountKobo: number; reference: string; from?: string; at: number };
+
+// Aide announces money as HAVING ARRIVED. Only a completed credit has.
+const ARRIVED = "completed";
+
+export function parseWalletTransactions(body: unknown): WalletCredit[] {
+  const list = obj(body).transactions;
+  if (!Array.isArray(list)) throw new Error("BMONI transactions response has no transactions array");
+
+  const credits: WalletCredit[] = [];
+  for (const raw of list) {
+    const t = obj(raw);
+    if (String(t.direction).toLowerCase() !== "incoming") continue;
+    if (String(t.status).toLowerCase() !== ARRIVED) continue;
+
+    const amount = typeof t.amount === "string" ? Number(t.amount) : t.amount;
+    if (typeof amount !== "number" || !Number.isFinite(amount)) {
+      throw new Error(`BMONI credit ${String(t.id)} carries no readable amount`);
+    }
+    const at = typeof t.createdAt === "number" ? t.createdAt : Date.parse(String(t.createdAt));
+    credits.push({
+      amountKobo: toKobo(amount),
+      reference: str(t.id, "transactions[].id"),
+      from: typeof t.counterpartyName === "string" ? t.counterpartyName : undefined,
+      at: Number.isFinite(at) ? at : Date.now(),
+    });
+  }
+  return credits;
+}

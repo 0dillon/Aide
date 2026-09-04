@@ -20,7 +20,6 @@ const FAILED = new Set(["FAILED", "REVERSED", "EXPIRED"]);
 
 export const monnifyProvider: PaymentProvider = {
   name: "monnify",
-  canListInbound: true,
 
   async ensureWallet(accountId) {
     const w = await ensureMonnifyWallet(accountId);

@@ -39,17 +39,12 @@ export interface PaymentProvider {
   // Make sure the account can receive money, and return where it lands.
   ensureWallet(accountId: string): Promise<{ accountNumber?: string; bankName?: string }>;
 
-  // Whether this provider can itemise money in at all.
-  //
-  // False is NOT "no payments". BMONI publishes a wallet balance but no
-  // wallet-level inbound history, so listInbound has nothing truthful to
-  // return — and an empty array would be rendered as "no payments received
-  // yet", which is a claim about the worker's employer that Aide cannot make.
-  // Callers must branch on this rather than on an empty list.
-  readonly canListInbound: boolean;
-
   // Confirmed money IN, in kobo. The credit side of the balance.
-  // Only meaningful when canListInbound is true.
+  //
+  // An empty list means no money has arrived, and callers may say so. A
+  // provider that cannot answer must throw rather than return [] — "nobody has
+  // paid you" is a claim about the worker's employer, and it must never be
+  // made on the strength of a failed read.
   listInbound(accountId: string): Promise<InboundCredit[]>;
 
   // The spendable balance, in kobo.

@@ -2,7 +2,7 @@ import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "../store/accounts";
 import { decimalStringToKobo } from "./amounts";
-import { getNgnBalanceKobo, getNgnDepositAccount, listBalances, verifyNigerianAccount } from "./bmoni";
+import { getNgnBalanceKobo, getNgnDepositAccount, listWalletTransactions, verifyNigerianAccount } from "./bmoni";
 import { payOutToBank, provisionBmoniWallet } from "./bmoni-wallet";
 import type { InboundCredit, PaymentProvider, PayoutOutcome, VerifiedAccount } from "./provider";
 
@@ -16,8 +16,6 @@ async function bmoniUserOf(accountId: string): Promise<string> {
 
 export const bmoniProvider: PaymentProvider = {
   name: "bmoni",
-  // See PaymentProvider.canListInbound. BMONI has no such endpoint.
-  canListInbound: false,
 
   async ensureWallet(accountId) {
     const acc = (await getAccount(accountId)) as {
@@ -42,18 +40,16 @@ export const bmoniProvider: PaymentProvider = {
   },
 
   async listInbound(accountId): Promise<InboundCredit[]> {
-    // KNOWN GAP, and the biggest one in this integration. BMONI's intro page
-    // claims transaction history, but the reference documents it only for
-    // cards — there is no wallet-level inbound history endpoint. Balances give
-    // a total, not the individual credits Aide announces ("₦5,000 just landed
-    // from Adebayo").
-    //
-    // Returning [] rather than fabricating a credit from the balance delta is
-    // the honest answer: a synthesised credit would be Aide announcing a
-    // payment it cannot actually see. Until the endpoint exists or webhooks are
-    // wired, inbound announcements are a Monnify-only feature.
-    void (await listBalances(await bmoniUserOf(accountId)));
-    return [];
+    const w = (await convexClient().query(api.wallets.getByAccount, { accountId })) as {
+      bmoniUserId?: string;
+      bmoniSmartWalletId?: string;
+    } | null;
+    if (!w?.bmoniUserId || !w.bmoniSmartWalletId) {
+      // Throwing, not returning []. No wallet means the history is unknown,
+      // and an empty list here would be read out as "no payments received".
+      throw new Error(`No BMONI wallet provisioned for ${accountId}`);
+    }
+    return await listWalletTransactions(w.bmoniUserId, w.bmoniSmartWalletId);
   },
 
   async verifyDestination(accountNumber, bankCode): Promise<VerifiedAccount> {

@@ -23,25 +23,8 @@ export async function GET(req: Request) {
 
   const outbound = await getWithdrawals(acc.id).catch(() => []);
 
-  const provider = paymentProvider();
-
-  // Not a failure, and not "no payments". BMONI publishes a wallet balance but
-  // no wallet-level list of the credits behind it, so there is nothing
-  // truthful to itemise. Returning [] would render as "No payments received
-  // yet" — a claim that nobody has paid this worker, which is exactly the
-  // thing they cannot check for themselves.
-  if (!provider.canListInbound) {
-    return Response.json({
-      inbound: null,
-      inboundUnavailable:
-        "I can see your balance, but I cannot list the individual payments behind it yet. " +
-        "Your balance above is the confirmed total.",
-      outbound,
-    });
-  }
-
   try {
-    const inbound = (await provider.listInbound(acc.id)).map((c) => ({
+    const inbound = (await paymentProvider().listInbound(acc.id)).map((c) => ({
       amount: toNaira(c.amountKobo),
       status: "PAID",
       from: c.from ?? "Bank transfer",

@@ -1,6 +1,7 @@
 import { bmoniMove, bmoniRead, BmoniError } from "./bmoni-client";
 import { koboToDecimalString } from "./amounts";
 import { parseCards } from "./bmoni-cards";
+import { parseWalletTransactions } from "./bmoni-shapes";
 import { parseBanks, parseCreatedUser, parseCreatedWallet, parseNgnBalanceKobo, parseNgnDepositAccount } from "./bmoni-shapes";
 
 // The BMONI Embedded operations Aide uses, in lifecycle order:
@@ -272,4 +273,13 @@ export { BmoniError };
 // asymmetry is real and cost an afternoon: POST to the wallet path is a 404.
 export async function listCards(userId: string, smartWalletId: string) {
   return parseCards(await bmoniRead({ path: `/v1/users/${userId}/smart-wallets/${smartWalletId}/cards` }));
+}
+
+// ---- 8. Wallet history ------------------------------------------------------
+
+// Money in and out of the wallet itself. Paged; the first page is the newest.
+export async function listWalletTransactions(userId: string, smartWalletId: string) {
+  return parseWalletTransactions(
+    await bmoniRead({ path: `/v1/users/${userId}/smart-wallets/${smartWalletId}/transactions` }),
+  );
 }

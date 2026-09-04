@@ -28,10 +28,38 @@ type Profile = WorkerProfile | EmployerProfile;
 
 const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 
+// Switching demo identities has to go through the server.
+//
+// This used to write `document.cookie = "aide-user=demo-employer"` and reload.
+// That silently did nothing: aide-user is HMAC-signed and HttpOnly, so a
+// hand-written value fails verification and the request stays whoever it
+// already was — which is the exact case tests/unit/session.test.ts covers
+// under "refuses a hand-written cookie naming an account". The cookie was
+// doing its job; the button was asking it not to.
+//
+// The reload only happens if the switch actually succeeded, so a failure can
+// no longer look identical to a success.
+async function switchTo(id: string): Promise<string | null> {
+  const res = await fetch("/api/account/switch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  }).catch(() => null);
+  if (!res?.ok) {
+    const body = await res?.json().catch(() => null);
+    return body?.error || "I could not switch accounts just now.";
+  }
+  window.location.reload();
+  return null;
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showEdit, setShowEdit] = useState(false);
+  // A failed switch must say so. Silently staying put is what this whole fix
+  // is about, and it reads identically to a success on a page nobody can see.
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const { speak } = useAide();
 
   const load = () => {
@@ -126,28 +154,32 @@ export default function ProfilePage() {
             — or just tell Aide “sign me up”.
           </p>
           <button
-            onClick={() => {
-              document.cookie = "aide-user=demo-employer; path=/; max-age=31536000; samesite=lax";
-              window.location.reload();
-            }}
+            onClick={async () => setSwitchError(await switchTo("demo-employer"))}
             className="min-h-10 rounded-lg border-2 border-[var(--ink)] px-4 py-2 font-bold text-[var(--ink)]"
           >
             Switch to Demo Employer (ClearVoice Media)
           </button>
+          {switchError && (
+            <p role="alert" className="font-bold text-[var(--alert)]">
+              {switchError}
+            </p>
+          )}
         </div>
       )}
 
       {acc.id === "demo-employer" && (
         <div className="mt-4">
           <button
-            onClick={() => {
-              document.cookie = "aide-user=demo-worker; path=/; max-age=31536000; samesite=lax";
-              window.location.reload();
-            }}
+            onClick={async () => setSwitchError(await switchTo("demo-worker"))}
             className="min-h-10 rounded-lg border-2 border-[var(--ink)] px-4 py-2 font-bold text-[var(--ink)]"
           >
             Switch to Demo Worker (Bunch Dillon)
           </button>
+          {switchError && (
+            <p role="alert" className="font-bold text-[var(--alert)]">
+              {switchError}
+            </p>
+          )}
         </div>
       )}
 

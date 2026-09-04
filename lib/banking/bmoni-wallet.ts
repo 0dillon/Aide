@@ -1,5 +1,6 @@
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
+import { knownBmoniWallet } from "./bmoni-personas";
 import { generateOwnerKey, openPrivateKey, sealPrivateKey } from "./keys";
 import { signOwnerProof, signProposalDigest } from "./signing";
 import { readProposalOutcome, type ProposalOutcome } from "./proposal-status";
@@ -88,6 +89,28 @@ export async function provisionBmoniWallet(
       smartWalletId: existing.bmoniSmartWalletId,
       walletAddress: existing.bmoniWalletAddress,
     };
+  }
+
+  // A demo persona whose BMONI user and wallet already exist. Adopt them rather
+  // than trying to create a second — the create would 409 on the email, and on
+  // the shared sandbox the lookup that would recover the id returns nothing.
+  const known = knownBmoniWallet(accountId);
+  if (known && !existing?.bmoniSmartWalletId) {
+    await convexClient().mutation(api.wallets.setBmoniUser, {
+      accountId,
+      accountReference,
+      bmoniUserId: known.bmoniUserId,
+    });
+    await convexClient().mutation(api.wallets.setBmoniWallet, {
+      accountId,
+      smartWalletId: known.smartWalletId,
+      walletAddress: known.walletAddress,
+    });
+    // Deliberately no owner key. This deployment cannot sign for a wallet
+    // somebody else's BMONI_KEY_SECRET holds the key to, and writing a freshly
+    // generated one would look provisioned while producing signatures BMONI
+    // rejects. Payout refuses on the missing key instead, which is the truth.
+    return { bmoniUserId: known.bmoniUserId, smartWalletId: known.smartWalletId, walletAddress: known.walletAddress };
   }
 
   const identity = requireIdentity(account);

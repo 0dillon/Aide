@@ -423,7 +423,7 @@ export function makeTools(account: Account) {
     register_payout_account: tool({
       description:
         "Validate and save this user's bank account for withdrawals. Read the returned account name back to the user for spoken confirmation before withdrawing.",
-      parameters: z.object({ accountNumber: z.string(), bankCode: z.string().describe("3-digit NIP bank code, e.g. 035 Wema, 058 GTBank") }),
+      parameters: z.object({ accountNumber: z.string(), bankCode: z.string().describe("Bank code exactly as returned by listBanks — the codes differ per provider, so never type one from memory") }),
       execute: async ({ accountNumber, bankCode }) => registerPayout(account.id, accountNumber, bankCode),
     }),
 
@@ -434,6 +434,27 @@ export function makeTools(account: Account) {
       execute: async ({ phrase }) => {
         if (account.role !== "worker") return { ok: false, message: "Only worker accounts use a spoken security phrase." };
         return store.setSecurityPhrase(account.id, phrase);
+      },
+    }),
+
+    list_banks: tool({
+      description:
+        "The banks a withdrawal can be sent to, with the codes THIS provider accepts. Call this before registering a payout or saving a beneficiary for a bank whose code you do not already have from a previous call in this conversation. Never type a bank code from memory: the codes are provider-specific (Wema is 035 on one rail and 000017 on another) and a wrong one fails name enquiry in a way that looks like a wrong account number.",
+      parameters: z.object({
+        search: z.string().optional().describe("Filter by name, e.g. 'wema'. Omit to list all — there can be hundreds."),
+      }),
+      execute: async ({ search }) => {
+        const { paymentProvider } = await import("../banking");
+        try {
+          const all = await paymentProvider().listBanks(account.id);
+          const q = search?.trim().toLowerCase();
+          const banks = q ? all.filter((b) => b.name.toLowerCase().includes(q)) : all;
+          // Capped: the full BMONI list is 302 banks, and the whole thing goes
+          // into the model's context on every subsequent turn.
+          return { ok: true, banks: banks.slice(0, 25), total: banks.length };
+        } catch (e) {
+          return { ok: false, message: `I could not load the list of banks just now. ${(e as Error).message}` };
+        }
       },
     }),
 
@@ -448,15 +469,15 @@ export function makeTools(account: Account) {
         "Save a withdrawal destination as a beneficiary so future withdrawals can go to it by name. Call after the user says yes to saving — typically right after a successful withdrawal to a new account (pass the accountName from that result), or with details they dictate (the account is then re-verified).",
       parameters: z.object({
         accountNumber: z.string(),
-        bankCode: z.string().describe("3-digit NIP bank code"),
+        bankCode: z.string().describe("Bank code exactly as returned by listBanks"),
         accountName: z.string().optional().describe("verified account name, if known from a preceding withdrawal"),
       }),
       execute: async ({ accountNumber, bankCode, accountName }) => {
         let name = accountName;
         if (!name) {
           try {
-            const { validateBankAccount } = await import("../monnify");
-            name = (await validateBankAccount(accountNumber, bankCode)).accountName;
+            const { paymentProvider } = await import("../banking");
+            name = (await paymentProvider().verifyDestination(account.id, accountNumber, bankCode)).accountName;
           } catch {
             return { ok: false, message: "Bank details not found — check the account number and bank." };
           }
@@ -468,11 +489,11 @@ export function makeTools(account: Account) {
 
     prepare_withdrawal: tool({
       description:
-        "Step 1 of 2 for a withdrawal from this user's own wallet. The destination can be: a new account (pass accountNumber + bankCode — it is verified by name enquiry), a saved beneficiary (pass beneficiaryName), or omitted to use their only/last saved destination. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read the amount and the verified account NAME back. Then: if mode is 'passphrase' (workers), tell them to say THEIR OWN security phrase to confirm — never say or guess it. If mode is 'word' (employers), give them the returned `phrase` word to say.",
+        "Step 1 of 2 for a withdrawal from this user's own wallet. The destination can be: a new account (pass accountNumber + bankCode), a saved beneficiary (pass beneficiaryName), or omitted to use their only/last saved destination. Fails if the amount exceeds the wallet balance. Do NOT move money here. After calling, read back the amount followed by the returned `destination` string VERBATIM — it already says the right thing about whether the account holder's name could be confirmed. When `nameVerified` is false the name is NOT trustworthy and you must never say it, in any form; `destination` reads the digits back instead. Then: if mode is 'passphrase' (workers), tell them to say THEIR OWN security phrase to confirm — never say or guess it. If mode is 'word' (employers), give them the returned `phrase` word to say.",
       parameters: z.object({
         amount: z.number().describe("amount in Naira to withdraw"),
         accountNumber: z.string().optional().describe("destination account number, for a new destination"),
-        bankCode: z.string().optional().describe("3-digit NIP bank code for the destination"),
+        bankCode: z.string().optional().describe("Bank code for the destination, exactly as returned by listBanks"),
         beneficiaryName: z.string().optional().describe("name of a saved beneficiary to send to"),
       }),
       execute: async ({ amount, accountNumber, bankCode, beneficiaryName }) =>

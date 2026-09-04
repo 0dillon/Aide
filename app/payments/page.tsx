@@ -7,6 +7,26 @@ type Txn = { amount: number; status: string; from: string; reference: string; at
 type Withdrawal = { amount: number; accountName: string; status: string; at: number };
 type Beneficiary = { accountName: string; accountNumber: string; bankCode: string; bankName?: string };
 
+// Mirrors app/api/payments/card/route.ts. The four non-ok states are kept
+// separate rather than folded into "no card": telling a worker whose card is
+// mid-issuance that they have none invites them to request a second one, and
+// the issuance fee is charged per request.
+type CardView = {
+  id: string;
+  name: string;
+  color?: string;
+  currency: string;
+  type: string;
+  status: string;
+  reserved: boolean;
+  spoken: string;
+};
+type CardState =
+  | { state: "ok"; cards: CardView[] }
+  | { state: "not-configured" }
+  | { state: "no-wallet" }
+  | { state: "unavailable"; message?: string };
+
 type Summary = {
   // null when the bank could not be reached. Unknown is not zero, and must
   // never be rendered as one.
@@ -16,27 +36,20 @@ type Summary = {
   role?: "worker" | "employer";
   accountNumber?: string;
   bankName?: string;
+  // What the BANK calls this account, which is not `name`. See the summary
+  // route: `name` is the Aide profile, this is what a payer's name enquiry
+  // returns. Showing the profile name here told an employer the account
+  // belonged to "ClearVoice Media" while their bank said "Jabo Samson Joe",
+  // which reads as a wrong account number and is a good reason to abandon a
+  // legitimate payment.
+  accountName?: string;
   payoutAccount?: string;
   payoutAccountName?: string;
   hasSecurityPhrase?: boolean;
   pendingWithdrawal?: { amount: number } | null;
 };
 
-const BANKS = [
-  { code: "044", name: "Access Bank" },
-  { code: "050", name: "Ecobank" },
-  { code: "070", name: "Fidelity Bank" },
-  { code: "011", name: "First Bank" },
-  { code: "214", name: "FCMB" },
-  { code: "058", name: "GTBank" },
-  { code: "076", name: "Polaris Bank" },
-  { code: "221", name: "Stanbic IBTC" },
-  { code: "232", name: "Sterling Bank" },
-  { code: "032", name: "Union Bank" },
-  { code: "033", name: "UBA" },
-  { code: "035", name: "Wema Bank" },
-  { code: "057", name: "Zenith Bank" },
-];
+type Bank = { code: string; name: string };
 
 const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 
@@ -46,7 +59,10 @@ const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 type Validation =
   | { status: "idle" }
   | { status: "checking" }
-  | { status: "ok"; accountName: string }
+  // `accountName` is absent when the provider's name enquiry could not be
+  // believed. Not an error — the account number was accepted — but there is no
+  // name to show, and showing one would be the whole problem.
+  | { status: "ok"; accountName?: string }
   | { status: "fail"; message: string };
 
 export default function PaymentsPage() {
@@ -59,6 +75,9 @@ export default function PaymentsPage() {
     outbound: Withdrawal[];
   } | null>(null);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
+  // null means "still checking", which the panel says out loud rather than
+  // rendering as an empty card.
+  const [card, setCard] = useState<CardState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -71,13 +90,30 @@ export default function PaymentsPage() {
   // Destination: a saved beneficiary, or new account details with inline validation
   const [destChoice, setDestChoice] = useState<string>("new"); // "new" | `${accountNumber}|${bankCode}`
   const [acct, setAcct] = useState("");
-  const [bank, setBank] = useState("058");
+  // Fetched, never hardcoded. The list used to be thirteen NIP codes baked
+  // into this file — Monnify's vocabulary. BMONI calls the same banks
+  // something else (Wema 035 vs 000017), and sending the wrong one fails name
+  // enquiry with a message about the account number, so the person tries a
+  // different account instead of a different bank. null = still loading.
+  const [banks, setBanks] = useState<Bank[] | null>(null);
+  const [banksError, setBanksError] = useState<string | null>(null);
+  const [bank, setBank] = useState("");
   const [validation, setValidation] = useState<Validation>({ status: "idle" });
   const validateSeq = useRef(0);
 
   // Withdrawal flow
   const [amount, setAmount] = useState("");
-  const [armed, setArmed] = useState<{ amount: number; accountName: string; mode: "word" | "passphrase"; phrase?: string } | null>(null);
+  // `destination` is built server-side and already says the right thing about
+  // whether the account holder's name could be confirmed. The screen and the
+  // spoken path use the same string so they cannot disagree.
+  const [armed, setArmed] = useState<{
+    amount: number;
+    accountName: string;
+    destination: string;
+    nameVerified: boolean;
+    mode: "word" | "passphrase";
+    phrase?: string;
+  } | null>(null);
   const [confirmWord, setConfirmWord] = useState("");
   const [moving, setMoving] = useState(false);
   const movingRef = useRef(false);
@@ -100,10 +136,18 @@ export default function PaymentsPage() {
     setError(null);
     try {
       // Summary is primary; history and beneficiaries are secondary and never fail the page.
-      const [res, h, b] = await Promise.all([
+      const [res, h, b, c, bk] = await Promise.all([
         fetch("/api/payments/summary"),
         fetch("/api/payments/transactions").then((r) => r.json()).catch(() => null),
         fetch("/api/payments/beneficiaries").then((r) => r.json()).catch(() => null),
+        // Secondary, like history: a card read that fails must not take the
+        // balance down with it.
+        fetch("/api/payments/card")
+          .then((r) => r.json())
+          .catch(() => ({ state: "unavailable" as const })),
+        fetch("/api/payments/banks")
+          .then((r) => r.json())
+          .catch(() => ({ banks: null, error: "I could not load the list of banks just now." })),
       ]);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not load your payment details.");
@@ -114,6 +158,19 @@ export default function PaymentsPage() {
       if (data?.balanceUnavailable) speakRef.current(data.balanceUnavailable);
       if (h && !h.error) setHistory(h);
       if (b?.beneficiaries) setBeneficiaries(b.beneficiaries);
+      setCard(c?.state ? c : { state: "unavailable" });
+      if (Array.isArray(bk?.banks)) {
+        setBanks(bk.banks);
+        setBanksError(null);
+        // Deliberately NOT auto-selected. With Monnify's thirteen banks a
+        // default of GTBank was harmless; BMONI returns 302, and defaulting
+        // landed on "AGOSASA MICROFINANCE BANK" — a bank nobody chose, sitting
+        // pre-selected under an account number someone typed. On a screen you
+        // would notice. This page is for people who cannot look.
+      } else {
+        setBanks([]);
+        setBanksError(bk?.error ?? "I could not load the list of banks just now.");
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -130,7 +187,9 @@ export default function PaymentsPage() {
   // response can't overwrite a newer one.
   useEffect(() => {
     if (destChoice !== "new") return;
-    if (!/^\d{10}$/.test(acct)) {
+    // No bank chosen yet: nothing to verify against, and verifying against a
+    // default nobody picked is how money reaches the wrong account.
+    if (!bank || !/^\d{10}$/.test(acct)) {
       setValidation({ status: "idle" });
       return;
     }
@@ -145,7 +204,7 @@ export default function PaymentsPage() {
         });
         const data = await res.json().catch(() => null);
         if (validateSeq.current !== seq) return;
-        if (res.ok && data?.accountName) setValidation({ status: "ok", accountName: data.accountName });
+        if (res.ok) setValidation({ status: "ok", accountName: data?.accountName });
         else setValidation({ status: "fail", message: data?.error || "Bank details not found — check the account number and bank." });
       } catch {
         if (validateSeq.current === seq) setValidation({ status: "fail", message: "Could not reach the bank verification service." });
@@ -242,17 +301,29 @@ export default function PaymentsPage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Could not prepare the withdrawal.");
-      setArmed({ amount: data.amount, accountName: data.accountName, mode: data.mode, phrase: data.phrase });
+      setArmed({
+        amount: data.amount,
+        accountName: data.accountName,
+        destination: data.destination,
+        nameVerified: data.nameVerified,
+        mode: data.mode,
+        phrase: data.phrase,
+      });
       setConfirmWord("");
       // Aide now waits for the confirmation — spoken aloud, hands-free.
       beginCapture((word) => {
         setConfirmWord(word);
         confirmWith(word);
       });
+      // `destination` comes from the server already knowing whether the
+      // account holder's name means anything. When it does not, this reads the
+      // digits back one at a time instead of naming a person the provider
+      // invented — which is the only check available to someone who cannot see
+      // the number they typed.
       speak(
         data.mode === "passphrase"
-          ? `You are sending ${data.amount} naira to ${data.accountName}. To confirm, say your security phrase.`
-          : `You are sending ${data.amount} naira to ${data.accountName}. To confirm, say the word: ${data.phrase}.`,
+          ? `You are sending ${data.amount} naira ${data.destination}. To confirm, say your security phrase.`
+          : `You are sending ${data.amount} naira ${data.destination}. To confirm, say the word: ${data.phrase}.`,
       );
     } catch (e) {
       setError((e as Error).message);
@@ -369,7 +440,7 @@ export default function PaymentsPage() {
         <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Receive money</h2>
         <p className="mt-2 text-lg">Anyone can pay you by bank transfer to your real earnings account:</p>
         <dl className="mt-4 divide-y divide-[var(--line)] border-y border-[var(--line)]">
-          <Row label="Account name" value={summary?.name ?? "—"} onCopy={copy} copied={copied} />
+          <Row label="Account name" value={summary?.accountName ?? "—"} onCopy={copy} copied={copied} />
           <Row label="Account number" value={summary?.accountNumber ?? "—"} mono onCopy={copy} copied={copied} />
           <Row label="Bank" value={summary?.bankName ?? "—"} onCopy={copy} copied={copied} />
         </dl>
@@ -462,19 +533,41 @@ export default function PaymentsPage() {
                     id="payout-bank"
                     value={bank}
                     onChange={(e) => setBank(e.target.value)}
+                    disabled={!banks || banks.length === 0}
                     className="mt-1 w-56 rounded-lg border-2 border-[var(--line)] bg-white px-4 py-3 text-lg"
                   >
-                    {BANKS.map((b) => (
+                    {banks === null && <option value="">Loading banks…</option>}
+                    {banks?.length === 0 && <option value="">No banks available</option>}
+                    {/* Stays selectable so the field can be returned to "unset"
+                        rather than trapping whatever was picked first. */}
+                    {banks !== null && banks.length > 0 && <option value="">Choose a bank…</option>}
+                    {banks?.map((b) => (
                       <option key={b.code} value={b.code}>
                         {b.name}
                       </option>
                     ))}
                   </select>
+                  {banksError && (
+                    <p role="alert" className="mt-1 font-bold text-[var(--alert)]">
+                      {banksError}
+                    </p>
+                  )}
                 </div>
                 {/* Inline validation status — right under the fields, spoken-friendly */}
                 <p aria-live="polite" className="w-full font-bold">
                   {validation.status === "checking" && <span className="text-[var(--ink-soft)]">Checking account…</span>}
-                  {validation.status === "ok" && <span className="text-[var(--good)]">✓ Account found: {validation.accountName}</span>}
+                  {validation.status === "ok" &&
+                    (validation.accountName ? (
+                      <span className="text-[var(--good)]">✓ Account found: {validation.accountName}</span>
+                    ) : (
+                      // Deliberately not a green tick. The number was accepted,
+                      // but nothing about the account holder was confirmed, and
+                      // a tick here is read as "checked".
+                      <span className="text-[var(--warn-ink)]">
+                        Account number accepted. I could not confirm the account holder&rsquo;s name on this
+                        connection — check the digits yourself before sending.
+                      </span>
+                    ))}
                   {validation.status === "fail" && <span className="text-[var(--alert)]">✗ {validation.message}</span>}
                   {validation.status === "idle" && acct.length > 0 && acct.length < 10 && (
                     <span className="text-[var(--ink-soft)]">Enter the full 10-digit account number.</span>
@@ -509,7 +602,7 @@ export default function PaymentsPage() {
         ) : (
           <div className="mt-4 rounded-lg p-5" style={{ background: "var(--warn-bg)", color: "var(--warn-ink)" }}>
             <p className="text-lg font-bold">
-              Confirm: send {naira(armed.amount)} to {armed.accountName}?
+              Confirm: send {naira(armed.amount)} {armed.destination}?
             </p>
             {armed.mode === "passphrase" ? (
               <p className="mt-2 text-lg">
@@ -593,7 +686,7 @@ export default function PaymentsPage() {
 
         <h3 className="mt-6 text-lg font-bold">Money out</h3>
         {!history || history.outbound.length === 0 ? (
-          <p className="mt-1 text-[var(--ink-soft)]">No withdrawals yet.</p>
+          <p className="mt-1 text-[var(--ink-soft)]">No money sent out yet.</p>
         ) : (
           <ul className="mt-2 divide-y divide-[var(--line)]">
             {history.outbound.map((w, i) => (
@@ -620,7 +713,101 @@ export default function PaymentsPage() {
           </ul>
         )}
       </section>
+
+      {/* BMONI card */}
+      <BmoniCardSection card={card} balance={summary?.balance ?? null} />
     </main>
+  );
+}
+
+// The card panel at the foot of the page.
+//
+// Every state here is stated in words as well as drawn, because the person
+// this page is for cannot see the card face. The card is rendered even when
+// there is no card — an empty outline that says so — rather than the section
+// vanishing, so "you have no card" and "the panel did not load" are not the
+// same silence.
+//
+// There is deliberately no card number on the face. BMONI returns the PAN only
+// from a separate sensitive-data call it documents as never-log, never-cache,
+// and it publishes no masked-PAN field on the list route at all — so any digits
+// drawn here would be invented ones.
+function BmoniCardSection({ card, balance }: { card: CardState | null; balance: number | null }) {
+  const cards = card?.state === "ok" ? card.cards : [];
+  const first = cards[0];
+
+  const spoken =
+    card === null
+      ? "Checking your card…"
+      : card.state === "not-configured"
+        ? "Card accounts are not switched on for this app yet."
+        : card.state === "no-wallet"
+          ? "You do not have a card account yet."
+          : card.state === "unavailable"
+            ? card.message || "I could not check your card just now."
+            : first
+              ? first.spoken
+              : "You do not have a card yet.";
+
+  return (
+    <section id="card" aria-label="Card" className="mt-6 rounded-xl border-2 border-[var(--line)] bg-white p-6">
+      <h2 className="text-sm font-bold uppercase tracking-widest text-[var(--ink-soft)]">Card</h2>
+
+      <div className="mt-4 flex flex-wrap items-start gap-6">
+        <div
+          className="flex aspect-[1.586/1] w-full max-w-[22rem] flex-col justify-between rounded-2xl border-2 p-5 text-white shadow-sm"
+          style={{
+            // The colour is the one the card was created with. Without a card
+            // it stays a neutral outline rather than borrowing a live card's
+            // look for something that does not exist.
+            background: first ? (first.color ?? "#1B4332") : "var(--line)",
+            borderColor: first ? "transparent" : "var(--ink-soft)",
+            color: first ? "#fff" : "var(--ink-soft)",
+          }}
+        >
+          <div className="flex items-start justify-between">
+            <span className="text-sm font-bold uppercase tracking-widest opacity-90">BMONI</span>
+            {first && (
+              <span className="rounded-full border border-current px-2 py-0.5 text-xs font-bold uppercase">
+                {first.type}
+              </span>
+            )}
+          </div>
+
+          {/* Where a PAN would go on a real card. It stays hidden by design. */}
+          <p className="font-mono text-xl tracking-[0.2em] opacity-80">•••• •••• •••• ••••</p>
+
+          <div className="flex items-end justify-between gap-3">
+            <span className="text-base font-bold">{first ? first.name : "No card yet"}</span>
+            <span className="text-sm font-bold tabular-nums opacity-90">
+              {first ? first.currency : ""}
+              {first && balance !== null ? ` ${naira(balance)}` : ""}
+            </span>
+          </div>
+        </div>
+
+        <div className="min-w-[14rem] flex-1">
+          <p role="status" className="text-lg font-bold">
+            {spoken}
+          </p>
+          {first && (
+            <dl className="mt-3 space-y-1 text-sm">
+              <div className="flex gap-2">
+                <dt className="text-[var(--ink-soft)]">Status</dt>
+                <dd className="font-bold">{first.reserved ? "being issued" : first.status.toLowerCase()}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-[var(--ink-soft)]">Currency</dt>
+                <dd className="font-bold">{first.currency}</dd>
+              </div>
+            </dl>
+          )}
+          <p className="mt-3 text-sm text-[var(--ink-soft)]">
+            The card number is never shown here. Ask Aide to read your card details aloud when you need them.
+          </p>
+        </div>
+      </div>
+    </section>
   );
 }
 

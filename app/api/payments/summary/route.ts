@@ -42,6 +42,11 @@ export async function GET(req: Request) {
     // The bank call may have failed, but Convex still knows the account.
     accountNumber: (balanceResult.ok ? balanceResult.account : undefined) ?? wallet?.accountNumber,
     bankName: (balanceResult.ok ? balanceResult.bankName : undefined) ?? wallet?.bankName,
+    // The name the BANK holds, which is not `name` above. `name` is the Aide
+    // profile ("ClearVoice Media"); this is what a payer's own name enquiry
+    // shows them ("Jabo Samson Joe"). The page must display this one, or it
+    // tells someone the account belongs to a person their bank disagrees about.
+    accountName: wallet?.accountName,
     payoutAccount: wallet?.payoutAccount,
     payoutAccountName: wallet?.payoutAccountName,
     // Workers confirm withdrawals with a personal spoken phrase; the page

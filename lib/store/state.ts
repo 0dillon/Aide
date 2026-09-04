@@ -69,6 +69,15 @@ export type Account = {
   // Present on real credentialed accounts; absent on the passwordless demo
   // identities. Never leaves the server — always strip via publicAccount().
   passwordHash?: string;
+  // The BMONI identity. Separate from `name` because BMONI needs a first/last
+  // split and Aide only ever collected one free-text string; splitting it
+  // would be a guess about someone's legal name, which fails KYC in a way
+  // nobody can debug afterwards. Absent on accounts that have not supplied
+  // them, and provisioning refuses rather than inventing any of it.
+  firstName?: string;
+  lastName?: string;
+  phoneNumber?: string; // E.164
+  bvn?: string; // 11 digits
 };
 
 // A record of money leaving via voice-confirmed withdrawal — Monnify has no
@@ -113,8 +122,13 @@ export type Wallet = {
   accountId: string;
   accountReference: string;
   status: "unprovisioned" | "active" | "failed";
+  // Which provider provisioned it. Absent on rows written before the field,
+  // which are Monnify's.
+  provider?: string;
   accountNumber?: string;
   bankName?: string;
+  // The name the bank holds for this account. Distinct from the profile name.
+  accountName?: string;
   lastError?: string;
   payoutAccount?: string;
   payoutBankCode?: string;
@@ -169,7 +183,7 @@ const SEED_JOBS: Job[] = [
 function seedState(): StoreState {
   const w: Worker = {
     id: "demo-worker",
-    name: "Aide Demo Worker",
+    name: "Bunch Dillon",
     email: "aide-demo-worker@aide.test",
     skills: ["audio transcription", "translation", "data entry"],
     bio: "Experienced transcriber fluent in English and Yoruba. Detail-oriented and dedicated to delivering clean text under tight schedules.",

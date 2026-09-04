@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
-import { createReservedAccount, getReservedAccount, getReservedAccountTransactions, validateBankAccount } from "../monnify";
+import { createReservedAccount, getReservedAccount } from "../monnify";
+import { paymentProvider, selectedProvider } from "../banking";
+import { destinationConfirmation, isFabricatedNameEnquiry } from "../banking/name-enquiry";
 import { api } from "../../convex/_generated/api";
 import { convexClient } from "../convex-server";
 import { getAccount } from "./accounts";
 import { type Beneficiary, type Wallet, type WithdrawalRecord } from "./state";
 import { toKobo, toNaira } from "../money";
 
-// Per-account Monnify wallets, now backed by Convex so balances, payout
-// destinations, and armed withdrawals are shared across serverless instances.
-// available = confirmed inbound transfers to this wallet's NUBAN − this
-// wallet's withdrawals (the Convex ledger).
+// Per-account wallets, backed by Convex so balances, payout destinations, and
+// armed withdrawals are shared across serverless instances.
+//
+// The money itself lives with whichever provider is selected — BMONI by
+// default. The balance and the receiving account number both come from
+// `paymentProvider()` rather than from any one provider's SDK, so this file no
+// longer knows which rail it is on.
 
 const CONFIRM_WORDS = ["mango", "sunrise", "guitar", "river", "orange", "candle", "harvest", "compass"];
 const PENDING_TTL_MS = 5 * 60 * 1000;
@@ -45,8 +50,10 @@ type WalletDoc = {
   accountId: string;
   accountReference: string;
   status: "unprovisioned" | "active" | "failed";
+  provider?: string;
   accountNumber?: string;
   bankName?: string;
+  accountName?: string;
   lastError?: string;
   payoutAccount?: string;
   payoutBankCode?: string;
@@ -84,8 +91,10 @@ function toWallet(d: WalletDoc): Wallet {
     accountId: d.accountId,
     accountReference: d.accountReference,
     status: d.status,
+    provider: d.provider,
     accountNumber: d.accountNumber,
     bankName: d.bankName,
+    accountName: d.accountName,
     lastError: d.lastError,
     payoutAccount: d.payoutAccount,
     payoutBankCode: d.payoutBankCode,
@@ -123,7 +132,47 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
 
   const p = (async () => {
     const wallet = await getWallet(accountId);
-    if (wallet.status === "active") return wallet;
+    // Active is not enough — it has to be active for the provider that is
+    // LIVE. A wallet Monnify provisioned satisfies `status === "active"`
+    // forever, so returning here left switched deployments permanently
+    // half-migrated: the old NUBAN still on screen, no BMONI user ever
+    // created, and every BMONI call failing on an account that looked healthy.
+    //
+    // A row with no recorded provider is Monnify's; that is all there was when
+    // those rows were written.
+    if (wallet.status === "active" && (wallet.provider ?? "monnify") === selectedProvider()) return wallet;
+
+    // BMONI provisions through its own multi-step lifecycle (user → wallet →
+    // onboarding → virtual account), so the seam owns it. Only Monnify's
+    // reserved-account creation is inline below, because the seam's Monnify
+    // adapter calls back into this very function.
+    if (selectedProvider() !== "monnify") {
+      const ref = wallet.accountReference;
+      const { accountNumber, bankName, accountName } = await paymentProvider().ensureWallet(accountId);
+      if (!accountNumber || !bankName) {
+        // No account number means nothing to give an employer. Recording it as
+        // active would have Aide read out a blank where a NUBAN should be.
+        throw new Error(`${selectedProvider()} returned no receiving account for ${accountId}`);
+      }
+      await convexClient().mutation(api.wallets.setProvisioned, {
+        accountId,
+        accountReference: ref,
+        accountNumber,
+        bankName,
+        accountName,
+        provider: selectedProvider(),
+      });
+      return {
+        ...wallet,
+        status: "active" as const,
+        provider: selectedProvider(),
+        accountNumber,
+        bankName,
+        accountName,
+        lastError: undefined,
+      };
+    }
+
     const acc = await getAccount(accountId);
     const ref = wallet.accountReference;
     let reserved;
@@ -141,8 +190,8 @@ export function ensureWallet(accountId: string): Promise<Wallet> {
     }
     const accountNumber = reserved.accounts[0].accountNumber;
     const bankName = reserved.accounts[0].bankName;
-    await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName });
-    return { ...wallet, status: "active" as const, accountNumber, bankName, lastError: undefined };
+    await convexClient().mutation(api.wallets.setProvisioned, { accountId, accountReference: ref, accountNumber, bankName, provider: "monnify" });
+    return { ...wallet, status: "active" as const, provider: "monnify", accountNumber, bankName, lastError: undefined };
   })();
 
   inFlight.set(
@@ -186,6 +235,13 @@ export async function cacheWalletBalance(accountId: string, inboundTotal: number
   balanceCache.set(accountId, { value: await availableFrom(accountId, inboundTotal), at: Date.now() });
 }
 
+// The provider's own figure, already spendable — nothing is derived from it.
+// Used by the arrival poller, which has just read the balance anyway and
+// should not make the next getBalance() ask again.
+export function cacheBalanceKobo(accountId: string, kobo: number): void {
+  balanceCache.set(accountId, { value: toNaira(kobo), at: Date.now() });
+}
+
 // TEMPORARY, and deliberately awkward to leave switched on.
 //
 // AIDE_DEMO_BALANCE stands in for the real figure ONLY when the bank cannot be
@@ -212,9 +268,8 @@ export async function getBalance(accountId: string): Promise<{ balance: number; 
     if (cached && Date.now() - cached.at < BALANCE_TTL_MS && w.accountNumber) {
       return { balance: cached.value, account: w.accountNumber, bankName: w.bankName };
     }
-    const { content } = await getReservedAccountTransactions(w.accountReference);
-    const inbound = content.filter((t) => t.paymentStatus === "PAID").reduce((s, t) => s + t.amount, 0);
-    const balance = await availableFrom(accountId, inbound);
+    // Kobo from the provider, naira out to callers that still speak it.
+    const balance = toNaira(await paymentProvider().getBalanceKobo(accountId));
     balanceCache.set(accountId, { value: balance, at: Date.now() });
     return { balance, account: w.accountNumber, bankName: w.bankName };
   } catch (e) {
@@ -238,12 +293,25 @@ export async function getBalance(accountId: string): Promise<{ balance: number; 
 
 export async function recordWithdrawal(accountId: string, r: Omit<WithdrawalRecord, "at" | "accountId">): Promise<void> {
   // r.amount is naira at this boundary; the ledger stores whole kobo.
-  await convexClient().mutation(api.wallets.recordWithdrawal, { accountId, amountKobo: toKobo(r.amount), accountName: r.accountName, status: r.status, at: Date.now() });
+  await convexClient().mutation(api.wallets.recordWithdrawal, {
+    accountId,
+    amountKobo: toKobo(r.amount),
+    accountName: r.accountName,
+    status: r.status,
+    at: Date.now(),
+    // Stamped at write time. A row that does not name the provider that moved
+    // the money is indistinguishable from a Monnify-era one, and the next
+    // switch would hide a real payout instead of a stranded one.
+    provider: selectedProvider(),
+  });
   balanceCache.delete(accountId); // money left — never serve a stale total
 }
 
 export async function getWithdrawals(accountId: string): Promise<WithdrawalRecord[]> {
-  const rows = (await convexClient().query(api.wallets.listWithdrawals, { accountId })) as WithdrawalRecord[];
+  const rows = (await convexClient().query(api.wallets.listWithdrawals, {
+    accountId,
+    provider: selectedProvider(),
+  })) as WithdrawalRecord[];
   return rows.map((r) => ({ accountId: r.accountId, amount: r.amount, accountName: r.accountName, status: r.status, at: r.at }));
 }
 
@@ -332,22 +400,48 @@ async function resolveDestination(
   accountId: string,
   dest: WithdrawalDestination | undefined,
   wallet: Wallet,
-): Promise<{ ok: true; account: string; bankCode: string; accountName: string; addedAt?: number } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; account: string; bankCode: string; accountName: string; nameVerified: boolean; addedAt?: number }
+  | { ok: false; message: string }
+> {
   if (dest?.accountNumber && dest?.bankCode) {
     try {
-      const r = await validateBankAccount(dest.accountNumber.trim(), dest.bankCode.trim());
-      return { ok: true, account: r.accountNumber, bankCode: dest.bankCode.trim(), accountName: r.accountName, addedAt: Date.now() };
+      // Through the seam: the bank CODES differ per provider, so verifying a
+      // BMONI destination against Monnify's name enquiry resolves a different
+      // bank or none at all. This is the check that reads a real account
+      // holder's name back before a worker approves the transfer.
+      const r = await paymentProvider().verifyDestination(accountId, dest.accountNumber.trim(), dest.bankCode.trim());
+      return {
+        ok: true,
+        account: r.accountNumber,
+        bankCode: dest.bankCode.trim(),
+        accountName: r.accountName,
+        nameVerified: r.nameVerified,
+        addedAt: Date.now(),
+      };
     } catch {
       return { ok: false, message: "Bank details not found — check the account number and bank, then try again." };
     }
   }
+  // A saved beneficiary's name was captured by the same name enquiry. If that
+  // endpoint fabricates, the stored name is a fabrication that has merely been
+  // sitting in the database a while — age does not make it true.
+  const savedNamesTrustworthy = !isFabricatedNameEnquiry(selectedProvider(), process.env.BMONI_BASE_URL);
+
   const beneficiaries = await listBeneficiaries(accountId);
   if (dest?.beneficiaryName) {
     const q = dest.beneficiaryName.trim().toLowerCase();
     const matches = beneficiaries.filter((b) => b.accountName.toLowerCase().includes(q));
     if (matches.length === 1) {
       const b = matches[0];
-      return { ok: true, account: b.accountNumber, bankCode: b.bankCode, accountName: b.accountName, addedAt: b.at };
+      return {
+        ok: true,
+        account: b.accountNumber,
+        bankCode: b.bankCode,
+        accountName: b.accountName,
+        nameVerified: savedNamesTrustworthy,
+        addedAt: b.at,
+      };
     }
     if (matches.length > 1) {
       return { ok: false, message: `More than one saved beneficiary matches "${dest.beneficiaryName}" — say the full name.` };
@@ -356,14 +450,28 @@ async function resolveDestination(
   }
   if (beneficiaries.length === 1) {
     const b = beneficiaries[0];
-    return { ok: true, account: b.accountNumber, bankCode: b.bankCode, accountName: b.accountName, addedAt: b.at };
+    return {
+      ok: true,
+      account: b.accountNumber,
+      bankCode: b.bankCode,
+      accountName: b.accountName,
+      nameVerified: savedNamesTrustworthy,
+      addedAt: b.at,
+    };
   }
   if (beneficiaries.length > 1) {
     const names = beneficiaries.map((b) => b.accountName).join(", ");
     return { ok: false, message: `Which account should the money go to? Your saved beneficiaries are: ${names}. Or give a new account number and bank.` };
   }
   if (wallet.payoutAccount && wallet.payoutBankCode && wallet.payoutAccountName) {
-    return { ok: true, account: wallet.payoutAccount, bankCode: wallet.payoutBankCode, accountName: wallet.payoutAccountName, addedAt: wallet.payoutSetAt };
+    return {
+      ok: true,
+      account: wallet.payoutAccount,
+      bankCode: wallet.payoutBankCode,
+      accountName: wallet.payoutAccountName,
+      nameVerified: savedNamesTrustworthy,
+      addedAt: wallet.payoutSetAt,
+    };
   }
   return { ok: false, message: "No destination account. Give the account number and the bank the money should go to." };
 }
@@ -374,7 +482,22 @@ async function resolveDestination(
 // personal spoken security phrase (the accessible OTP replacement); employers
 // confirm with a per-withdrawal random word.
 export async function armWithdrawal(accountId: string, amount: number, dest?: WithdrawalDestination): Promise<
-  | { ok: true; amount: number; accountName: string; account: string; mode: "word" | "passphrase"; phrase?: string }
+  | {
+      ok: true;
+      amount: number;
+      accountName: string;
+      account: string;
+      // False when the provider's name enquiry fabricates. The caller must not
+      // present or speak `accountName` as confirmation; `destination` is what
+      // to say instead.
+      nameVerified: boolean;
+      // The one line Aide reads before the money moves, already correct for
+      // whether the name means anything. Built here so the voice path and the
+      // screen path cannot drift apart on the single sentence that matters.
+      destination: string;
+      mode: "word" | "passphrase";
+      phrase?: string;
+    }
   | { ok: false; message: string; needsSecurityPhrase?: boolean }
 > {
   const w = await getWallet(accountId);
@@ -433,6 +556,12 @@ export async function armWithdrawal(accountId: string, amount: number, dest?: Wi
     amount,
     accountName: resolved.accountName,
     account: resolved.account,
+    nameVerified: resolved.nameVerified,
+    destination: destinationConfirmation({
+      accountName: resolved.accountName,
+      accountNumber: resolved.account,
+      nameVerified: resolved.nameVerified,
+    }),
     mode,
     // The random word is only revealed for word mode; a worker's security
     // phrase is theirs and is never echoed back.

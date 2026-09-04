@@ -1,6 +1,7 @@
-import { getReservedAccountTransactions } from "../monnify";
+import { paymentProvider } from "../banking";
+import { toNaira } from "../money";
 import { state, type AideEvent } from "./state";
-import { cacheWalletBalance, listActiveWallets } from "./payments";
+import { cacheBalanceKobo, listActiveWallets } from "./payments";
 import { publishConvexEvent } from "../convex-server";
 
 // Live events: confirmed payments announced the moment they land, unprompted.
@@ -60,21 +61,35 @@ export function ensurePolling(): void {
     let reachedProvider = false;
     for (const wallet of watched) {
       try {
-        const { content } = await getReservedAccountTransactions(wallet.accountReference);
+        // Through the seam. This poller is how Aide gets to say "₦5,000 just
+        // landed from Adebayo" — under BMONI it was polling Monnify's
+        // reserved-account transactions, an endpoint with nothing in it, so
+        // wages would have arrived in silence. Silence is the one thing a
+        // blind user cannot distinguish from a crash.
+        const provider = paymentProvider();
+        const credits = await provider.listInbound(wallet.accountId);
         reachedProvider = true;
-        const paid = content.filter((t) => t.paymentStatus === "PAID");
-        await cacheWalletBalance(wallet.accountId, paid.reduce((s, t) => s + t.amount, 0));
-        for (const t of paid) {
-          const parsed = typeof t.createdOn === "number" ? t.createdOn : t.createdOn ? Date.parse(t.createdOn) : Date.now();
+
+        // The balance from the provider rather than a sum of the credits: for
+        // BMONI the wallet balance already nets off withdrawals, and summing
+        // credits would ignore every payout the worker has made.
+        await provider
+          .getBalanceKobo(wallet.accountId)
+          .then((kobo) => cacheBalanceKobo(wallet.accountId, kobo))
+          .catch(() => {
+            /* the announcement matters more than the cache; getBalance will ask again */
+          });
+
+        for (const c of credits) {
           publishEvent(
             wallet.accountId,
             {
               type: "payment",
-              amount: t.amountPaid ?? t.amount,
-              from: t.customerDTO?.name ?? "a bank transfer",
-              reference: t.transactionReference,
+              amount: toNaira(c.amountKobo),
+              from: c.from ?? "a bank transfer",
+              reference: c.reference,
             },
-            Number.isNaN(parsed) ? Date.now() : parsed,
+            Number.isFinite(c.at) ? c.at : Date.now(),
           );
         }
       } catch (e) {

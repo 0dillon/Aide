@@ -1,5 +1,7 @@
 import { getAccount, getApplications, getBalance, getJob, getWallet, listApplicantsForJobs, listJobs } from "@/lib/store";
 import { userIdFrom } from "@/lib/session";
+import { balanceLine } from "@/lib/greeting-balance";
+import { formatNaira } from "@/lib/money";
 
 export const runtime = "nodejs";
 // Talks to the bank, which can be slow. The platform default is short enough
@@ -57,11 +59,15 @@ export async function GET(req: Request) {
 
   const wallet = await getWallet(acc.id);
   if (wallet.pendingWithdrawal) {
-    parts.push(`You have a withdrawal of ${wallet.pendingWithdrawal.amount} naira waiting for your spoken confirmation.`);
+    parts.push(
+      `You have a withdrawal of ${formatNaira(wallet.pendingWithdrawal.amountKobo)} waiting for your spoken confirmation.`,
+    );
   }
-  if (balance !== null && balance > 0) {
-    parts.push(`You have ${balance} naira in your account, ready to withdraw.`);
-  }
+  // Zero is stated, not skipped. Skipping it made an empty account sound
+  // exactly like a balance that had not come back yet, and the listener has no
+  // screen to tell those apart. See lib/greeting-balance.ts.
+  const money = balanceLine(balance);
+  if (money) parts.push(money);
   if (awaitingAssessment.length > 0) {
     parts.push(
       awaitingAssessment.length === 1

@@ -4,6 +4,7 @@
 // "aide stop talking" voice interrupt, and tab-visibility arbitration.
 // The React provider in ./index.tsx is a thin wrapper over this class.
 
+import { bestAlternative, normalizePidgin } from "@/lib/voice/pidgin";
 type SR = any; // Web Speech API isn't in lib.dom
 
 // A sentence waiting its turn at the speaker, together with its audio once
@@ -764,9 +765,16 @@ export class VoiceEngine {
     this.detachRecognizer();
 
     const rec: SR = new Ctor();
+    // The closest thing to Nigerian Pidgin the Web Speech API offers. There is
+    // no `pcm` model, so pidgin arrives transcribed by an English one.
     rec.lang = "en-NG";
     rec.interimResults = true;
     rec.continuous = true;
+    // Ask for several readings of each utterance. The recognizer ranks by an
+    // English language model, which systematically prefers the English
+    // rendering of a pidgin phrase — "we tin day" over "wetin dey" — so the
+    // right words are often present but not first. See lib/voice/pidgin.ts.
+    rec.maxAlternatives = 4;
 
     const onState = this.handlers.onState;
 
@@ -820,9 +828,23 @@ export class VoiceEngine {
       let finalText = "";
       let interimText = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) finalText += t;
-        else interimText += t;
+        const result = e.results[i];
+        if (result.isFinal) {
+          // Only finals get the alternative-picking and the repairs. Interims
+          // are redrawn several times a second and are never acted on, so the
+          // work would be wasted and the text would visibly churn as it was
+          // rewritten under the user.
+          const alternatives: string[] = [];
+          for (let a = 0; a < result.length; a++) alternatives.push(result[a].transcript);
+          const chosen = bestAlternative(alternatives);
+          const repaired = normalizePidgin(chosen);
+          if (repaired !== alternatives[0]) {
+            console.info(`Aide mic: pidgin repair ${JSON.stringify(alternatives[0])} -> ${JSON.stringify(repaired)}`);
+          }
+          finalText += repaired + " ";
+        } else {
+          interimText += result[0].transcript;
+        }
       }
 
       const partial = interimText.trim();

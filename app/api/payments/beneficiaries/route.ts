@@ -1,5 +1,5 @@
 import { getAccount, listBeneficiaries, saveBeneficiary } from "@/lib/store";
-import { validateBankAccount } from "@/lib/monnify";
+import { paymentProvider } from "@/lib/banking";
 import { userIdFrom } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
   let name = accountName?.trim();
   if (!name) {
     try {
-      name = (await validateBankAccount(accountNumber.trim(), bankCode.trim())).accountName;
+      name = (await paymentProvider().verifyDestination(acc.id, accountNumber.trim(), bankCode.trim())).accountName;
     } catch {
       return Response.json({ error: "Bank details not found — check the account number and bank." }, { status: 404 });
     }
